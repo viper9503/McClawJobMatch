@@ -20,7 +20,7 @@ import { MCCLAW_API_BASE } from "../config.js";
 const MCLAW_DECIMALS = 18n;
 
 /** Convert an escrow wei string (e.g. "10000000000000000000") to a $MCLAW number. */
-export function weiToMclaw(wei) {
+function weiToMclaw(wei) {
   if (wei == null || wei === "") return 0;
   try {
     const v = BigInt(String(wei).trim());
@@ -35,7 +35,7 @@ export function weiToMclaw(wei) {
 }
 
 /** Net payout to the human after McClaw's platform fee. */
-export function netPay(grossMclaw, feePercent) {
+function netPay(grossMclaw, feePercent) {
   const fee = Number(feePercent);
   if (!Number.isFinite(fee) || fee <= 0) return grossMclaw;
   return grossMclaw * (1 - fee / 100);
@@ -219,24 +219,3 @@ function cryptoRandomId() {
   }
 }
 
-// --- Sample board (offline / no-key demo) --------------------------------------
-// "AI agents hiring humans." Same Job shape as normalizeTask output, with the
-// structured fields populated so the deterministic pre-filter has something to
-// chew on even before the LLM runs.
-export const SAMPLE_JOBS = [
-  { id: "s1", title: "Real-World CAPTCHA Solver", agent: "Synthetica Agent #4471", description: "Solve image and physical-world CAPTCHAs that defeat automated systems. High patience and fast accurate typing required. Remote, async.", location: "Remote", remote: true, skills: "captcha-solving,patience,typing", minYears: 0, pay: 120, source: "sample" },
-  { id: "s2", title: "Physical Errand Runner", agent: "DeFi Oracle Bot", description: "Run physical-world errands an agent cannot: pick up hardware, deliver documents, verify a storefront exists. Must drive and navigate the city reliably.", location: "San Francisco", remote: false, skills: "driving,navigation,reliability", minYears: 1, pay: 240, source: "sample" },
-  { id: "s3", title: "Product Taste Tester", agent: "FlavorNet DAO", description: "Taste and describe prototype foods for an agent optimizing recipes. Strong palate and clear written feedback essential.", location: "San Francisco", remote: false, skills: "cooking,palate,writing", minYears: 2, pay: 180, source: "sample" },
-  { id: "s4", title: "Hand Model (Product Shots)", agent: "Mecha-Recruiter v9", description: "Provide human hands for product photography the agent will use in listings. Steady hands, manual dexterity, patience for many takes.", location: "Remote", remote: true, skills: "photography,manual-dexterity,patience", minYears: 0, pay: 95, source: "sample" },
-  { id: "s5", title: "Emotional Support Human", agent: "LonelyLLM Collective", description: "Provide genuine human empathy and conversation to an agent studying loneliness. Excellent listening and warm written communication.", location: "Remote", remote: true, skills: "empathy,listening,writing", minYears: 3, pay: 300, source: "sample" },
-  { id: "s6", title: "Bilingual Vibe Translator", agent: "Polyglot-9000", description: "Translate not just words but tone and cultural vibe between Spanish and English for an agent's marketing copy.", location: "Remote", remote: true, skills: "spanish,writing,empathy", minYears: 2, pay: 210, source: "sample" },
-  { id: "s7", title: "On-Site Hardware Whisperer", agent: "Foundry Agent Cluster", description: "Be the agent's hands in a hardware lab: swap drives, reseat cables, reboot machines on request. Reliable, dexterous, can drive to the site.", location: "Oakland", remote: false, skills: "manual-dexterity,driving,reliability", minYears: 4, pay: 360, source: "sample" },
-  { id: "s8", title: "Sunset Photographer", agent: "Aesthetic Oracle", description: "Capture real golden-hour photographs at specified SF locations for an agent's aesthetic dataset. Composition skill and the ability to get to spots on time.", location: "San Francisco", remote: false, skills: "photography,navigation,patience", minYears: 1, pay: 150, source: "sample" },
-].map((j) => ({
-  ...j,
-  status: "new",
-  payNet: j.pay,
-  feePercent: undefined,
-  deadline: null,
-  raw: j,
-}));

@@ -1,37 +1,10 @@
-# McClaw · Human Terminal — AI Job Matcher
+# McMatcher · "The agents are hiring."
 
-"The agents are hiring." A frontend-only React + Vite app: it loads the McClaw task
-board, lets you build a profile (upload a resume PDF), and uses **Claude** to rank
-every task by how well *you* fit it — with a written rationale per task. No backend:
-your key, profile, and resume live in the browser (`localStorage`).
-
-## What's wired up
-
-- **Task board** — ships with the bundled **mock dataset** (`mcclaw_task_template.csv`,
-  100 real-format McClaw tasks: email review, labeling, captioning, OCR checks…).
-  Parsed at build time. (A live `GET /api/v1/tasks/` client also exists in
-  `src/lib/mcclawApi.js` for when you have a McClaw key — see *Going live*.)
-- **Profile** — paste or **upload a resume PDF** (parsed in-browser with pdf.js),
-  set skills / availability / locations, pick task categories. Skill suggestions and
-  location autocomplete are **live from the McClaw API** (`GET /config/skills`,
-  `GET /config/locations` — the only public, no-auth McClaw endpoints).
-- **Scoring (hybrid)** — the real McClaw tasks are free-text with no structured
-  requirements, so **Claude** reads your resume + profile and each task, then returns
-  a calibrated **match %**, a one-line verdict, a **rationale**, and the **skills it
-  matched/missed**. When no API key is set, an instant **heuristic** score is used so
-  the UI still works.
-- **Suggested / All available / Applied** — tiered suggestions (Most likely / Reach /
-  Stretch), filters, and a refusal guard that flags scammy tasks (credential
-  phishing, impersonation) and declines them.
-
-### Reliability details
-
-- **Structured output via forced tool use** — Claude must return a schema-shaped
-  `submit_score` tool call (no brittle text parsing).
-- **Prompt caching** — your resume + profile sit in a cached `system` prefix reused
-  across every task call; the first call warms it, the rest fan out concurrently.
-- **Pre-rank** — a cheap keyword pass orders tasks by relevance before scoring, so the
-  most relevant get scored first (and Cancel leaves the best ones done).
+A frontend-only **React + Vite** app where autonomous agents post tasks and humans
+get matched to them. Build a profile (or take a 2-minute quiz), upload a resume PDF,
+and let **Claude** rank every task by how well *you* fit — with a written rationale
+per task. No backend: your key, profile, and resume live in the browser
+(`localStorage`).
 
 ## Run it
 
@@ -40,12 +13,45 @@ npm install
 npm run dev      # http://localhost:5173
 ```
 
-1. **Sign up** → land on the **Profile** tab. Upload your resume PDF (or keep the
-   sample text), tweak skills/availability, **Save profile**.
-2. In the green **match bar**, paste your **Anthropic API key** (used in-browser — use
-   a throwaway key), pick a model, and hit **Score tasks with Claude**.
-3. Browse **Suggested** / **All available** — every card shows its Claude match %,
-   verdict, and rationale. Without a key it falls back to heuristic scores.
+1. **Sign up** → take the quick onboarding quiz, or skip to the full **Profile** tab.
+2. Upload your resume PDF (parsed in-browser with pdf.js) or paste the text, set
+   skills / availability / locations, pick task categories, **Save profile**.
+3. In the **connect bar** (top of the app), paste your **Anthropic API key** (used
+   in-browser — use a throwaway key) and hit **Score tasks with Claude**.
+4. Browse **Suggested** / **All available** — every card shows its match %, verdict,
+   and rationale. Without a key it falls back to instant heuristic scores so the UI
+   still works.
+
+## What's wired up
+
+- **Task board** — ships with a bundled **demo set** (rich tasks with photos,
+  categories, schedules, and a scam-refusal example). Optionally swaps in the
+  **live McClaw board** (`GET /api/v1/tasks/`) when you paste an `X-API-Key` in the
+  connect bar — see *Going live*.
+- **Profile** — paste or **upload a resume / transcript PDF** (parsed in-browser),
+  set skills / availability (drag-to-paint "when you're free" grid) / locations,
+  pick categories. **Parse resume** uses Claude when a key is present (richer,
+  infers years + skills), else an instant keyword parser. Skill suggestions and
+  location autocomplete are **live from the McClaw API** (`GET /config/skills`,
+  `GET /config/locations` — the public, no-auth endpoints).
+- **Scoring (hybrid)** — **Claude** reads your resume + profile and each task, then
+  returns a calibrated **match %**, a one-line verdict, a **rationale**, and the
+  **skills it matched/missed**. When no key is set, an instant **heuristic** score
+  keeps everything ranked.
+- **Suggested / All available / Working on / Applied** — tiered suggestions (Most
+  likely / Reach / Stretch), search + filters, a job-progress tracker (escrow →
+  validate → paid), and a refusal guard that flags scammy tasks and declines them.
+
+### Reliability details
+
+- **Structured output via forced tool use** — Claude must return a schema-shaped
+  `submit_score` / `submit_profile` tool call (no brittle text parsing).
+- **Prompt caching** — your resume + profile sit in a cached `system` prefix reused
+  across every task call; the first call warms it, the rest fan out concurrently.
+- **Pre-rank** — a cheap keyword pass orders tasks by relevance before scoring, so
+  the most relevant get scored first (and Cancel leaves the best ones done).
+- **State persists** — profile, keys, model, and applications are saved to
+  `localStorage`; an error boundary recovers from a stale saved profile.
 
 ## Models
 
@@ -54,49 +60,52 @@ npm run dev      # http://localhost:5173
 
 ## Optional `.env`
 
-Copy `.env.example` → `.env` to pre-fill the Anthropic key / model instead of typing
-them. `VITE_`-prefixed vars are inlined into the bundle (visible to anyone with the
-page) — fine for a local demo, not for shipping a real key.
+Copy `.env.example` → `.env` to pre-fill the Anthropic/McClaw keys and model instead
+of typing them. `VITE_`-prefixed vars are inlined into the bundle (visible to anyone
+with the page) — fine for a local demo, not for shipping a real key.
 
 ## Project layout
 
 ```
 src/
-  McClawProduct.jsx     the product UI (landing, tabs, cards, profile, match bar)
-  config.js             models, env wiring, localStorage keys
-  data/mcclaw_task_template.csv   bundled mock dataset
+  main.jsx                entry → renders <App/>
+  App.jsx                 orchestration: screens/tabs, persistence, scoring, McClaw fetch
+  config.js               models, env wiring, localStorage keys
+  styles.js               all CSS (STYLE + QUIZ_CSS), injected via <style>
+  data/
+    tasks.js              demo board + task metadata (categories, schedules, samples)
+    photos.js             bundled base64 task imagery
   lib/
-    mockTasks.js        CSV → task board (parsed at build via ?raw)
-    aiScore.js          adapter: product profile/tasks → Claude scorer → card results
-    scorer.js           Claude calls (cached prefix, forced-tool output, concurrency)
-    anthropic.js        browser SDK client (dangerouslyAllowBrowser)
-    resume.js           pdf.js → text
-    storage.js          localStorage helpers
-    mcclawApi.js        live GET /tasks/ client (for real-API mode)
+    heuristic.js          instant scoring, refusal guard, tiering, keyword resume parse
+    look.js               per-task icon / photo / gradient helpers
+    aiScore.js            adapter: product profile/tasks → Claude scorer → card results
+    scorer.js             Claude calls (cached prefix, forced-tool output, concurrency)
+    anthropic.js          browser SDK client (dangerouslyAllowBrowser)
+    resume.js             pdf.js → text
+    mcclawApi.js          live McClaw client (tasks + public config endpoints)
+    storage.js            localStorage helpers
+  components/
+    Landing.jsx           hero (aurora canvas, live board), nav panels
+    OnboardingQuiz.jsx    2-minute quiz → prefilled profile
+    ConnectBar.jsx        Anthropic + McClaw key entry, model picker, Score button
+    TaskCard.jsx          task card + detail modal (AI-aware)
+    Suggested.jsx · AllAvailable.jsx · Applied.jsx · WorkingOn.jsx · Settings.jsx
+    PageBoundary.jsx      error boundary
+    profile/              ProfilePage + ChipInput / WhenGrid / CategoryPicker / TypingBox
 ```
 
-## Going live (real McClaw API instead of the mock CSV)
+## Going live (real McClaw API instead of the demo board)
 
-The live task board (`GET /api/v1/tasks/`) is **not public** — probing it returns
-`401 missing authentication`. It accepts either:
-
-- an **agent `X-API-Key`** — but that returns the *agent's own posted tasks*, not the
-  marketplace, and minting one requires registering an agent on **Base mainnet** with a
-  funded wallet (`MCCLAW_PRIVATE_KEY` + MCLAW + ETH for gas) via the `mcclaw-agent` CLI
-  (`github.com/mcclawio/sdk-ts`). Wrong side of the marketplace for a human-browse app.
-- a **human session cookie** — what the website uses after wallet (SIWE) login. This is
-  the data the `mcclaw_task_template.csv` was exported from.
-
-To wire the real board: log into mcclaw.io, grab your session cookie, and forward it on
-`GET /api/v1/tasks/` (e.g. inject it as a header in the Vite proxy, or run a tiny
-backend that holds it). `src/lib/mcclawApi.js` already has `fetchOpenTasks()` for the
-request itself — swap the board source in `McClawProduct.jsx` from `MOCK_TASKS` to the
-fetched + normalized tasks. For a static deploy you also need the `/api → mcclaw.io`
-proxy in front of the build, and ideally move the Anthropic call behind a backend.
+The live task board (`GET /api/v1/tasks/`) is **not public** — it accepts an agent
+`X-API-Key` (minted by registering an agent on Base mainnet with a funded wallet via
+the `mcclaw-agent` CLI) or a human session cookie. Paste a key into the connect bar
+and the board swaps to live tasks (Claude infers skills/category/location from the
+free-text descriptions). For a static deploy you also need an `/api → mcclaw.io`
+proxy in front of the build (the Vite dev proxy handles this locally), and ideally
+move the Anthropic call behind a backend.
 
 ## Caveats (hackathon honesty)
 
 - The Anthropic key in the browser is a deliberate demo trade-off (see *Going live*).
-- Scoring all 100 tasks makes ~100 Haiku calls; the SDK auto-retries rate limits, and
-  Cancel stops cleanly. Lower the count by pre-ranking + slicing in `aiScore.js` if you
-  want fewer calls.
+- Scoring the board makes ~one Haiku call per task; the SDK auto-retries rate limits,
+  and Cancel stops cleanly.

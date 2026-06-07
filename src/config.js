@@ -39,4 +39,6 @@ export const LS = {
   profile: "mcclaw.profile",
   resumeText: "mcclaw.resumeText",
   resumeName: "mcclaw.resumeName",
+  applied: "mcclaw.applied",
+  jobStatus: "mcclaw.jobStatus",
 };
