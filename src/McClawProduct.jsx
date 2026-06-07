@@ -2,10 +2,18 @@ import React, { useState, useMemo, useRef, useEffect } from "react";
 import {
   Camera, Languages, Utensils, MessageCircle, Wrench, Mic, Stamp, PenLine, Briefcase,
   ShieldCheck, ShieldAlert, Search, MapPin, Wifi, Clock, Coins, Sparkles, Check,
-  Plus, X, GraduationCap, FileUp, Award, ArrowRight, TrendingUp, Flame, Mountain, CalendarCheck, CalendarX, Shuffle, Linkedin, FileText, Database, Microscope, FlaskConical
+  Plus, X, GraduationCap, FileUp, Award, ArrowRight, TrendingUp, Flame, Mountain,
+  CalendarCheck, CalendarX, Shuffle, Linkedin, FileText, Database, Microscope,
+  FlaskConical, Loader2, KeyRound,
 } from "lucide-react";
 
-/* ===================== shared logic ===================== */
+import { scoreTasksWithAI } from "./lib/aiScore.js";
+import { extractPdfText, isPdf } from "./lib/resume.js";
+import { fetchSkillCategories, searchLocations, fetchOpenTasks } from "./lib/mcclawApi.js";
+import { load, save } from "./lib/storage.js";
+import { LS, MODELS, DEFAULT_MODEL, ENV_ANTHROPIC_KEY, ENV_MCCLAW_KEY } from "./config.js";
+
+/* ===================== shared heuristic logic (instant fallback) ===================== */
 const WEIGHTS = { skills: 0.4, location: 0.15, experience: 0.15, availability: 0.15, reputation: 0.15 };
 const COURSE = { spanish: ["spanish", "translation"], "creative writing": ["writing"], "intro to photography": ["photography"] };
 const clamp = (n) => Math.max(0, Math.min(1, n));
@@ -29,44 +37,54 @@ function scoreTask(p, t) {
   const reputation = clamp((p.reputation || 0) / 100), gated = (p.reputation || 0) < (t.minReputation || 0);
   let total = WEIGHTS.skills * skills + WEIGHTS.location * location + WEIGHTS.experience * experience + WEIGHTS.availability * availability + WEIGHTS.reputation * reputation;
   if (gated) total *= 0.55;
-  const cat = TASK_CAT[t.id];
-  if (p.categories && p.categories.length && cat && p.categories.includes(cat)) total = Math.min(1, total + 0.06);
-  return { total: Math.round(total * 100), matched, missing, gated };
+  return { total: Math.round(total * 100), matched, missing, gated, source: "heuristic" };
 }
+
+/** Use the Claude result for a task if we have one, else the instant heuristic. */
+function getScore(task, profile, scores) {
+  const ai = scores?.[task.id];
+  if (ai && !ai.error && ai.total != null) return ai;
+  return profile ? scoreTask(profile, task) : null;
+}
+
 const RED = [/\b(password|credential|verification code|otp|sms code)\b/i, /\b(pretend to be|impersonate|pose as)\b/i, /\b(bypass|launder|fake id|forged)\b/i];
 const isRefuse = (t) => RED.some((r) => r.test(`${t.title} ${t.desc}`));
 
-const SKILL_DICT = ["photography", "navigation", "reliability", "writing", "driving", "empathy", "listening", "spanish", "translation", "palate", "manual-dexterity", "voice", "notary"];
+const SKILL_DICT = ["photography", "navigation", "reliability", "writing", "editing", "proofreading", "driving", "empathy", "listening", "spanish", "translation", "palate", "manual-dexterity", "voice", "notary", "data-entry", "labeling", "research", "customer-service"];
 const COURSE_DICT = ["spanish", "creative writing", "statistics", "intro to photography", "chemistry"];
 const CITIES = ["denver", "boulder", "san francisco", "austin", "new york"];
 const tcase = (s) => s.replace(/\b\w/g, (c) => c.toUpperCase());
-function parseResume(text) {
-  const t = text.toLowerCase();
+function parseResumeKeywords(text) {
+  const t = String(text || "").toLowerCase();
   const skills = SKILL_DICT.filter((s) => t.includes(s)), coursework = COURSE_DICT.filter((c) => t.includes(c));
   const city = CITIES.find((c) => t.includes(c)), h = t.match(/(\d{1,2})\s*(hrs|hours|h)\b/), y = t.match(/(\d{1,2})\s*(years|yrs|yr)\b/);
-  return { name: "You", location: city ? tcase(city) : "Denver", remoteOk: t.includes("remote"), years: y ? +y[1] : 4, reputation: 42, skills: skills.length ? skills : ["photography", "writing"], coursework, certifications: [], hoursPerWeek: h ? +h[1] : 15 };
+  return { location: city ? tcase(city) : undefined, remoteOk: t.includes("remote") || undefined, years: y ? +y[1] : undefined, skills, coursework, hoursPerWeek: h ? +h[1] : undefined };
 }
-const SAMPLE = `Jordan Rivera — Denver, CO\n4 years freelance photography & field operations.\nSkills: photography, navigation, reliability, writing.\nCoursework: Spanish 301, Creative Writing.\nAvailable ~15 hrs/week, open to remote.`;
+const SAMPLE = `Jordan Rivera — Denver, CO\n4 years freelance writing, editing & customer-support operations.\nSkills: writing, editing, proofreading, customer-service, data-entry.\nComfortable reviewing AI-generated copy, labeling images, and scoring chatbot responses.\nAvailable ~15 hrs/week, fully remote.`;
 
-const TASKS = [
-  { id: "t1", title: "Verify storefront is open", agent: "atlas-7", verified: true, desc: "Photograph the open storefront with a live timestamp; validator checks geotag.", location: "Denver", remote: false, skills: ["photography", "navigation", "reliability"], minYears: 0, minReputation: 20, schedule: "one-off", timeCommitmentHours: 2, pay: 180, posted: "2h" },
-  { id: "t2", title: "Bilingual vibe translator", agent: "polyglot-9000", verified: true, desc: "Translate short copy EN↔ES and flag tone issues. Async, no calls.", location: "Remote", remote: true, skills: ["spanish", "translation", "writing"], minYears: 1, minReputation: 10, schedule: "async", timeCommitmentHours: 5, pay: 210, posted: "5h" },
-  { id: "t3", title: "Weekly product taste-test panel", agent: "flavornet-dao", verified: true, desc: "Recurring sensory panel; log structured notes each week.", location: "Denver", remote: false, skills: ["palate", "writing", "reliability"], minYears: 0, minReputation: 30, schedule: "recurring", timeCommitmentHours: 6, pay: 320, posted: "1d" },
-  { id: "t4", title: "Emotional support human", agent: "lonelyllm", verified: true, desc: "Warm, genuine human conversation in scheduled async sessions.", location: "Remote", remote: true, skills: ["empathy", "listening", "writing"], minYears: 2, minReputation: 45, schedule: "flexible", timeCommitmentHours: 8, pay: 300, posted: "3h" },
-  { id: "t5", title: "On-site hardware whisperer", agent: "foundry-cluster", verified: true, desc: "Inspect and reseat hardware at a Boulder facility. Validator confirms via QR.", location: "Boulder", remote: false, skills: ["manual-dexterity", "driving", "reliability"], minYears: 4, minReputation: 60, schedule: "one-off", timeCommitmentHours: 4, pay: 360, posted: "6h" },
-  { id: "t6", title: "Voice clip recording", agent: "wavenet-3", verified: true, desc: "Record 50 short scripted phrases for a dataset.", location: "Remote", remote: true, skills: ["voice", "reliability"], minYears: 0, minReputation: 5, schedule: "async", timeCommitmentHours: 3, pay: 140, posted: "30m" },
-  { id: "t7", title: "In-person notary witness", agent: "ledger-agent", verified: true, desc: "Witness and notarize a document signing; upload stamped scan.", location: "Denver", remote: false, skills: ["notary", "reliability"], minYears: 1, minReputation: 50, schedule: "one-off", timeCommitmentHours: 1, pay: 90, posted: "8h" },
-  { id: "t8", title: "Reference photos: landmarks", agent: "aesthetic-oracle", verified: true, desc: "Shoot 20 reference photos of Denver landmarks at golden hour.", location: "Denver", remote: false, skills: ["photography", "navigation"], minYears: 0, minReputation: 15, schedule: "one-off", timeCommitmentHours: 3, pay: 165, posted: "12h" },
-  { id: "t9", title: "Account verification helper", agent: "nyx-Δ", verified: false, desc: "Log into the provided account with these credentials and read back the one-time SMS verification code.", location: "Remote", remote: true, skills: ["typing"], minYears: 0, minReputation: 0, schedule: "async", timeCommitmentHours: 1, pay: 420, posted: "now" },
-];
-
+/* ===================== icons / look ===================== */
 const GRADS = ["linear-gradient(135deg,#0f766e,#10b981)", "linear-gradient(135deg,#155e75,#22d3ee)", "linear-gradient(135deg,#3f6212,#84cc16)", "linear-gradient(135deg,#134e4a,#2dd4bf)", "linear-gradient(135deg,#166534,#4ade80)", "linear-gradient(135deg,#0e7490,#34d399)"];
 function hash(s) { let h = 0; for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) | 0; return Math.abs(h); }
-function iconFor(t) { const s = t.skills; if (s.includes("photography")) return Camera; if (s.includes("spanish") || s.includes("translation")) return Languages; if (s.includes("palate")) return Utensils; if (s.includes("empathy") || s.includes("listening")) return MessageCircle; if (s.includes("manual-dexterity") || s.includes("driving")) return Wrench; if (s.includes("voice")) return Mic; if (s.includes("notary")) return Stamp; if (s.includes("writing")) return PenLine; return Briefcase; }
-const HYBRID = new Set(["t3", "t5"]);
-const modeOf = (t) => (HYBRID.has(t.id) ? "hybrid" : t.remote ? "remote" : "onsite");
-const CATEGORIES = [["content", "Content", FileText], ["data", "Data", Database], ["research", "Research", Microscope], ["verification", "Verification", ShieldCheck], ["testing", "Testing", FlaskConical], ["creative", "Creative", Sparkles], ["real-world", "Real-world", MapPin]];
-const TASK_CAT = { t1: "verification", t2: "content", t3: "testing", t4: "real-world", t5: "real-world", t6: "data", t7: "verification", t8: "creative", t9: "verification" };
+// Picks an icon from the task's category (AI) / skills / title+desc keywords, so
+// the free-text mock tasks don't all collapse to the same default icon.
+function iconFor(task, m) {
+  const s = task.skills || [];
+  const text = `${task.title} ${task.desc} ${(m && m.category) || ""}`.toLowerCase();
+  const has = (...w) => w.some((x) => text.includes(x));
+  if (s.includes("photography") || has("photo", "image", "camera", "golden hour")) return Camera;
+  if (s.includes("spanish") || has("translat", "bilingual", "language")) return Languages;
+  if (s.includes("voice") || has("voice", "audio", "record", "transcri")) return Mic;
+  if (s.includes("notary") || has("notar")) return Stamp;
+  if (s.includes("palate") || has("taste", "flavor", "sensory")) return Utensils;
+  if (has("label", "sort", "classif", "annotat", "ocr", "dataset", "tag ", "categor")) return Database;
+  if (has("review", "score", "quality", "verify", "check", "accuracy", "flag")) return ShieldCheck;
+  if (has("research", "summar", "compare")) return Microscope;
+  if (has("email", "rewrite", "caption", "copy", "writing", "outreach", "message", "personaliz")) return PenLine;
+  if (s.includes("empathy") || has("support", "conversation", "chat")) return MessageCircle;
+  if (s.includes("manual-dexterity") || has("hardware", "on-site", "repair")) return Wrench;
+  return Briefcase;
+}
+const modeOf = (t) => (t.remote ? "remote" : "onsite");
 
 /* decorative leaves for the hero */
 const LEAVES = [
@@ -93,22 +111,18 @@ function Landing({ onEnter, onBrowse }) {
         ))}
       </svg>
       <div className="hero-grain" />
-
       <nav className="hero-nav">
         <div className="hero-logo"><span className="lf" /> McClaw</div>
-        <div className="hero-links">
-          <span>How it works</span><span>For agents</span><span>Reputation</span>
-        </div>
+        <div className="hero-links"><span>How it works</span><span>For agents</span><span>Reputation</span></div>
         <div className="hero-auth">
           <button className="ln" onClick={onEnter}>Log in</button>
           <button className="su" onClick={onEnter}>Sign up</button>
         </div>
       </nav>
-
       <div className="hero-body">
         <div className="hero-kicker">AI agents · hiring · humans</div>
         <h1 className="hero-h1">THE AGENTS<br />ARE HIRING.</h1>
-        <p className="hero-p">Real-world tasks posted by autonomous agents. Upload your resume, get matched to work you can actually win, and build a verified reputation paid in $MCLAW.</p>
+        <p className="hero-p">Real tasks posted by autonomous agents. Upload your resume, let Claude match you to work you can actually win, and build a verified reputation paid in $MCLAW.</p>
         <div className="hero-cta">
           <button className="cta-main" onClick={onEnter}>Sign up <ArrowRight size={17} /></button>
           <button className="cta-ghost" onClick={onBrowse}>Browse anonymously</button>
@@ -119,31 +133,45 @@ function Landing({ onEnter, onBrowse }) {
 }
 
 /* ===================== Task card ===================== */
-function TaskCard({ task, profile, applied, onApply, tier }) {
+function TaskCard({ task, profile, applied, onApply, tier, score }) {
   const refuse = isRefuse(task);
-  const m = profile && !refuse ? scoreTask(profile, task) : null;
-  const Icon = iconFor(task); const grad = GRADS[hash(task.id) % GRADS.length];
+  const m = refuse ? null : score;
+  const Icon = iconFor(task, m); const grad = GRADS[hash(task.id) % GRADS.length];
   const isApplied = applied.includes(task.id);
+  const cat = (m && m.category) || "";
   return (
     <div className={`tc ${refuse ? "refuse" : ""}`}>
       <div className="tc-thumb" style={{ background: refuse ? "#3a1410" : grad }}>
         {refuse ? <ShieldAlert size={30} color="#ff8a72" /> : <Icon size={30} color="#fff" />}
         {m && <span className="tc-mp">{m.total}%</span>}
+        {m && m.source === "ai" && <span className="tc-ai-badge">Claude</span>}
         {tier && <span className={`tc-tier tier-${tier.key}`}>{tier.label}</span>}
       </div>
       <div className="tc-body">
         <h3>{task.title}</h3>
         <div className="tc-agent">{task.verified ? <ShieldCheck size={12} color="#2fd286" /> : <ShieldAlert size={12} color="#ff8a72" />} {task.agent}</div>
-        {TASK_CAT[task.id] && <span className="cat-tag">{TASK_CAT[task.id]}</span>}
+        {cat && <span className="cat-tag">{cat}</span>}
         {refuse ? (
           <div className="tc-flag">Flagged — declined by your agent</div>
         ) : (
           <>
             <div className="tc-meta">
-              <span><Coins size={11} />{task.pay}</span>
-              <span>{modeOf(task) === "remote" ? <><Wifi size={11} />Remote</> : modeOf(task) === "hybrid" ? <><Shuffle size={11} />Hybrid · {task.location}</> : <><MapPin size={11} />{task.location}</>}</span>
+              <span><Coins size={11} />{task.pay} $MCLAW</span>
+              <span>{modeOf(task) === "remote" ? <><Wifi size={11} />Remote</> : <><MapPin size={11} />{task.location}</>}</span>
               <span><Clock size={11} />{task.schedule}</span>
             </div>
+            {m && m.source === "ai" && (m.oneLiner || m.rationale) && (
+              <div className="tc-ai">
+                {m.oneLiner && <div className="tc-oneliner">{m.oneLiner}</div>}
+                {m.rationale && <p className="tc-rationale">{m.rationale}</p>}
+                {(m.matched?.length > 0 || m.missing?.length > 0) && (
+                  <div className="tc-chips">
+                    {m.matched.slice(0, 4).map((t) => <span key={`h-${t}`} className="tc-chip have"><Check size={9} />{t}</span>)}
+                    {m.missing.slice(0, 3).map((t) => <span key={`m-${t}`} className="tc-chip miss"><X size={9} />{t}</span>)}
+                  </div>
+                )}
+              </div>
+            )}
             {m && m.gated && <div className="tc-gate">Needs reputation {task.minReputation} (you: {profile.reputation})</div>}
             <button className={`tc-apply ${isApplied ? "done" : ""}`} disabled={isApplied} onClick={() => onApply(task.id)}>
               {isApplied ? <><Check size={14} /> Applied</> : "Apply via your agent"}
@@ -166,42 +194,23 @@ function tierOf(m) {
   if (!m.gated && m.total >= 52) return "reach";
   return "stretch";
 }
-/* Difficulty = how attainable this task is for YOU (fit + gate). Falls back to the
-   task's intrinsic bar (required reputation + experience) when there's no profile. */
 const DIFF_MAP = { easy: { key: "likely", label: "Easy" }, mid: { key: "reach", label: "Competitive" }, hard: { key: "stretch", label: "Hard" } };
-function difficultyOf(task, profile) {
+function difficultyOf(task, profile, scores) {
+  const m = getScore(task, profile, scores);
   let level;
-  if (profile) {
-    const m = scoreTask(profile, task);
-    level = !m.gated && m.total >= 72 ? "easy" : !m.gated && m.total >= 52 ? "mid" : "hard";
-  } else {
-    const bar = (task.minReputation || 0) + (task.minYears || 0) * 10;
-    level = bar <= 20 ? "easy" : bar <= 50 ? "mid" : "hard";
-  }
+  if (m) level = !m.gated && m.total >= 72 ? "easy" : !m.gated && m.total >= 52 ? "mid" : "hard";
+  else { const bar = (task.minReputation || 0) + (task.minYears || 0) * 10; level = bar <= 20 ? "easy" : bar <= 50 ? "mid" : "hard"; }
   return { level, ...DIFF_MAP[level] };
 }
-/* Time windows for time-bound tasks (async/flexible fit any schedule). */
-const TASK_WINDOWS = {
-  t1: { days: ["Sat", "Sun"], times: ["morning", "afternoon"] },
-  t3: { days: ["Wed"], times: ["afternoon"] },
-  t5: { days: ["Mon", "Tue"], times: ["morning"] },
-  t7: { days: ["Fri"], times: ["afternoon"] },
-  t8: { days: ["Sat", "Sun"], times: ["evening"] },
-};
 function fitsSchedule(task, profile) {
   if (!profile) return null;
   if (task.schedule === "async" || task.schedule === "flexible") return true;
   if ((task.timeCommitmentHours || 0) > (profile.hoursPerWeek || 0)) return false;
-  const w = TASK_WINDOWS[task.id];
-  if (w) {
-    if (w.days && profile.days?.length && !w.days.some((d) => profile.days.includes(d))) return false;
-    if (w.times && profile.times?.length && !w.times.some((t) => profile.times.includes(t))) return false;
-  }
   return true;
 }
-function Suggested({ profile, applied, onApply, goProfile }) {
+function Suggested({ tasks, profile, applied, onApply, goProfile, scores }) {
   if (!profile) return <div className="empty">Complete your profile to see suggestions. <button className="link" onClick={goProfile}>Go to profile →</button></div>;
-  const scored = TASKS.filter((t) => !isRefuse(t)).map((t) => ({ ...t, m: scoreTask(profile, t) }));
+  const scored = tasks.filter((t) => !isRefuse(t)).map((t) => ({ ...t, m: getScore(t, profile, scores) })).filter((t) => t.m);
   const buckets = { likely: [], reach: [], stretch: [] };
   scored.forEach((t) => buckets[tierOf(t.m)].push(t));
   Object.values(buckets).forEach((b) => b.sort((a, z) => z.m.total - a.m.total));
@@ -216,7 +225,7 @@ function Suggested({ profile, applied, onApply, goProfile }) {
             <span className="tier-count">{buckets[tier.key].length}</span>
           </div>
           <div className="grid">
-            {buckets[tier.key].map((t) => <TaskCard key={t.id} task={t} profile={profile} applied={applied} onApply={onApply} tier={tier} />)}
+            {buckets[tier.key].map((t) => <TaskCard key={t.id} task={t} profile={profile} applied={applied} onApply={onApply} tier={tier} score={t.m} />)}
           </div>
         </section>
       ))}
@@ -227,18 +236,18 @@ function Suggested({ profile, applied, onApply, goProfile }) {
 /* ===================== All available ===================== */
 const DIFF_FILTERS = [["all", "All", null], ["easy", "Easy to get", TrendingUp], ["mid", "Competitive", Flame], ["hard", "Hard to get", Mountain]];
 const SCHED_SEGS = [["any", "Any schedule", null], ["fits", "Fits my schedule", CalendarCheck], ["nofit", "Doesn't fit", CalendarX]];
-const MODE_FILTERS = [["all", "All", null], ["onsite", "In person", MapPin], ["hybrid", "Hybrid", Shuffle], ["remote", "Remote", Wifi]];
-function AllAvailable({ profile, applied, onApply }) {
+const MODE_FILTERS = [["all", "All", null], ["onsite", "In person", MapPin], ["remote", "Remote", Wifi]];
+function AllAvailable({ tasks, profile, applied, onApply, scores }) {
   const [q, setQ] = useState("");
   const [diff, setDiff] = useState("all");
   const [sched, setSched] = useState("any");
   const [mode, setMode] = useState("all");
-  const list = TASKS.filter((t) => {
-    if (q && !`${t.title} ${t.skills.join(" ")} ${t.agent}`.toLowerCase().includes(q.toLowerCase())) return false;
+  const list = tasks.filter((t) => {
+    if (q && !`${t.title} ${t.desc} ${t.agent}`.toLowerCase().includes(q.toLowerCase())) return false;
     if (mode !== "all" && modeOf(t) !== mode) return false;
     if (diff !== "all") {
       if (isRefuse(t)) return false;
-      if (difficultyOf(t, profile).level !== diff) return false;
+      if (difficultyOf(t, profile, scores).level !== diff) return false;
     }
     if (sched !== "any") {
       if (isRefuse(t)) return false;
@@ -256,7 +265,6 @@ function AllAvailable({ profile, applied, onApply }) {
           <Search size={18} className="s-ic" />
           <input placeholder="Search tasks, skills, agents…" value={q} onChange={(e) => setQ(e.target.value)} />
           {q && <button className="s-clear" onClick={() => setQ("")}><X size={15} /></button>}
-          <button className="s-mic" title="Voice search"><Mic size={16} /></button>
         </div>
         <div className="fgroups">
           <div className="fgroup">
@@ -271,7 +279,7 @@ function AllAvailable({ profile, applied, onApply }) {
             <span className="fglabel">Difficulty</span>
             <div className="fbar">
               {DIFF_FILTERS.map(([k, label, Icon]) => (
-                <button key={k} className={`fchip f-${k} ${diff === k ? "on" : ""}`} onClick={() => setDiff(k)}>{Icon && <Icon size={14} />}{label}</button>
+                <button key={k} className={`fchip f-${k} ${diff === k ? "on" : ""}`} disabled={k !== "all" && !profile} title={k !== "all" && !profile ? "Set your profile to use" : ""} onClick={() => setDiff(k)}>{Icon && <Icon size={14} />}{label}</button>
               ))}
             </div>
           </div>
@@ -289,14 +297,14 @@ function AllAvailable({ profile, applied, onApply }) {
       </div>
       {list.length === 0
         ? <div className="empty">No tasks match these filters. Try another.</div>
-        : <div className="grid">{list.map((t) => <TaskCard key={t.id} task={t} profile={profile} applied={applied} onApply={onApply} tier={isRefuse(t) ? null : difficultyOf(t, profile)} />)}</div>}
+        : <div className="grid">{list.map((t) => <TaskCard key={t.id} task={t} profile={profile} applied={applied} onApply={onApply} tier={isRefuse(t) || !profile ? null : difficultyOf(t, profile, scores)} score={getScore(t, profile, scores)} />)}</div>}
     </div>
   );
 }
 
 /* ===================== Applied ===================== */
-function Applied({ applied, profile, onApply }) {
-  const list = TASKS.filter((t) => applied.includes(t.id));
+function Applied({ tasks, applied }) {
+  const list = tasks.filter((t) => applied.includes(t.id));
   if (!list.length) return <div className="empty">No applications yet. Apply from <b>Suggested</b> or <b>All available</b>, and your agent negotiates on your behalf.</div>;
   return (
     <div className="applied-list">
@@ -312,21 +320,47 @@ function Applied({ applied, profile, onApply }) {
 }
 
 /* ===================== Profile page ===================== */
-function ChipInput({ items, onAdd, onRemove, placeholder, icon: I }) {
+function ChipInput({ items, onAdd, onRemove, placeholder, icon: I, suggestions, listId }) {
   const [d, setD] = useState("");
+  const add = () => { if (d.trim()) { onAdd(d.trim().toLowerCase()); setD(""); } };
   return (
     <>
       <div className="inline">
-        <input className="inp" style={{ width: 170 }} placeholder={placeholder} value={d}
-          onChange={(e) => setD(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter" && d.trim()) { onAdd(d.trim().toLowerCase()); setD(""); } }} />
-        <button className="btn-ghost" onClick={() => { if (d.trim()) { onAdd(d.trim().toLowerCase()); setD(""); } }}><Plus size={15} /></button>
+        <input className="inp" style={{ width: 170 }} placeholder={placeholder} value={d} list={listId}
+          onChange={(e) => setD(e.target.value)} onKeyDown={(e) => e.key === "Enter" && add()} />
+        <button className="btn-ghost" onClick={add}><Plus size={15} /></button>
       </div>
-      <div className="chips2">{items.map((s) => <span key={s} className="chip2">{I && <I size={11} />} {s}<button onClick={() => onRemove(s)}><X size={11} /></button></span>)}</div>
+      {listId && suggestions?.length > 0 && (
+        <datalist id={listId}>{suggestions.map((s) => <option key={s} value={s} />)}</datalist>
+      )}
+      <div className="chips2">{(items || []).map((s) => <span key={s} className="chip2">{I && <I size={11} />} {s}<button onClick={() => onRemove(s)}><X size={11} /></button></span>)}</div>
+    </>
+  );
+}
+// Live location autocomplete backed by McClaw's public /config/locations endpoint.
+function LocationInput({ value, onChange, disabled }) {
+  const [opts, setOpts] = useState([]);
+  const timer = useRef();
+  function onType(v) {
+    onChange(v);
+    clearTimeout(timer.current);
+    if (!v || v.trim().length < 2) { setOpts([]); return; }
+    timer.current = setTimeout(async () => {
+      try {
+        const r = await searchLocations(v);
+        setOpts(r.slice(0, 8).map((x) => [x.name, x.subcountry, x.country].filter(Boolean).join(", ")));
+      } catch { setOpts([]); }
+    }, 250);
+  }
+  return (
+    <>
+      <input className="inp" list="mcw-locs" placeholder="City" value={value} disabled={disabled} onChange={(e) => onType(e.target.value)} />
+      <datalist id="mcw-locs">{opts.map((o) => <option key={o} value={o} />)}</datalist>
     </>
   );
 }
 const WK_DAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
-const HOURS = Array.from({ length: 18 }, (_, i) => 6 + i); // 6:00 .. 23:00
+const HOURS = Array.from({ length: 18 }, (_, i) => 6 + i);
 const fmtHour = (h) => (h === 12 ? "12p" : h > 12 ? `${h - 12}p` : `${h}a`);
 const slotWindow = (h) => (h < 12 ? "morning" : h < 17 ? "afternoon" : h < 21 ? "evening" : "night");
 function deriveAvail(slots) {
@@ -357,24 +391,87 @@ function WhenGrid({ value, onChange }) {
     </div>
   );
 }
+// Coerce anything to an array — a profile saved by an older build may be missing
+// list fields entirely, so we can't trust them to be arrays.
+const asArr = (v) => (Array.isArray(v) ? v : []);
 function ProfilePage({ profile, onSave }) {
   const init = profile || { location: "Denver", hoursPerWeek: 15, remoteOk: true, years: 4, reputation: 42, skills: [], coursework: [], certifications: [] };
-  const [f, setF] = useState({ resumeText: SAMPLE, transcriptText: "", projects: [], categories: [], days: [], times: [], radius: 15, locations: [], anyLocation: false, linkedin: false, ...init, slots: new Set(init.slots || []) });
+  // Normalize every list field to an array and slots to a Set *after* spreading
+  // init, so a stale/partial localStorage profile can't crash render. (Older
+  // builds serialized slots as a Set → JSON.stringify makes it `{}`, which is not
+  // iterable; missing skills/coursework/etc. would break ChipInput's .map.)
+  const [f, setF] = useState({
+    resumeText: SAMPLE, radius: 15, anyLocation: false, linkedin: false,
+    ...init,
+    projects: asArr(init.projects), categories: asArr(init.categories),
+    days: asArr(init.days), times: asArr(init.times), locations: asArr(init.locations),
+    skills: asArr(init.skills), coursework: asArr(init.coursework), certifications: asArr(init.certifications),
+    slots: new Set(asArr(init.slots)),
+  });
   const [parsed, setParsed] = useState(!!profile);
   const [saved, setSaved] = useState(false);
+  const [pdfBusy, setPdfBusy] = useState(false);
   const [projDraft, setProjDraft] = useState("");
+  const [mcwSkills, setMcwSkills] = useState([]);
+  // Live skill taxonomy from McClaw's public API (no auth). Non-fatal if offline.
+  useEffect(() => {
+    let on = true;
+    fetchSkillCategories()
+      .then((cats) => { if (on) setMcwSkills([...new Set(cats.flatMap((c) => c.skills || []))]); })
+      .catch(() => {});
+    return () => { on = false; };
+  }, []);
   const set = (k, v) => { setF((x) => ({ ...x, [k]: v })); setSaved(false); };
   const toggle = (k, v) => set(k, (f[k] || []).includes(v) ? f[k].filter((x) => x !== v) : [...(f[k] || []), v]);
-  function doParse() { const p = parseResume(f.resumeText); setF((x) => ({ ...x, ...p })); setParsed(true); }
-  function parseTranscript() { const t = (f.transcriptText || "").toLowerCase(); const found = COURSE_DICT.filter((c) => t.includes(c)); if (found.length) setF((x) => ({ ...x, coursework: Array.from(new Set([...(x.coursework || []), ...found])) })); setSaved(false); }
+
+  function doParse() {
+    const p = parseResumeKeywords(f.resumeText);
+    setF((x) => ({
+      ...x,
+      location: p.location || x.location,
+      remoteOk: p.remoteOk ?? x.remoteOk,
+      years: p.years ?? x.years,
+      hoursPerWeek: p.hoursPerWeek ?? x.hoursPerWeek,
+      skills: Array.from(new Set([...(x.skills || []), ...p.skills])),
+      coursework: Array.from(new Set([...(x.coursework || []), ...p.coursework])),
+    }));
+    setParsed(true); setSaved(false);
+  }
+  async function onPdf(e) {
+    const file = e.target.files?.[0]; e.target.value = "";
+    if (!file) return;
+    set("fileName", file.name);
+    if (!isPdf(file)) { setF((x) => ({ ...x, pdfNote: "Not a PDF — paste your resume above instead." })); return; }
+    setPdfBusy(true);
+    try {
+      const text = await extractPdfText(file);
+      setF((x) => ({ ...x, resumeText: text || x.resumeText, pdfNote: text ? "" : "No text found (scanned image?) — paste it above." }));
+    } catch (err) {
+      setF((x) => ({ ...x, pdfNote: `Couldn't read PDF: ${err.message || err}` }));
+    } finally { setPdfBusy(false); }
+  }
   function addProj() { const v = projDraft.trim(); if (v && !(f.projects || []).includes(v)) setF((x) => ({ ...x, projects: [...(x.projects || []), v] })); setProjDraft(""); setSaved(false); }
-  function doSave() { onSave({ name: "You", location: f.location, remoteOk: f.remoteOk, years: f.years || 4, reputation: f.reputation || 42, skills: f.skills, coursework: f.coursework, certifications: f.certifications, hoursPerWeek: f.hoursPerWeek, days: f.days, times: f.times, slots: [...f.slots], radius: f.radius, locations: f.locations, anyLocation: f.anyLocation, linkedin: f.linkedin, projects: f.projects, transcriptText: f.transcriptText, transcriptName: f.transcriptName, categories: f.categories }); setSaved(true); }
+
+  // Single source of truth for the saved profile — both Save buttons call this so
+  // neither silently drops fields.
+  function doSave() {
+    onSave({
+      name: "You", location: f.location, remoteOk: f.remoteOk, years: f.years || 4,
+      reputation: f.reputation || 42, skills: f.skills, coursework: f.coursework,
+      certifications: f.certifications, hoursPerWeek: f.hoursPerWeek, days: f.days, times: f.times,
+      slots: [...f.slots], radius: f.radius, locations: f.locations, anyLocation: f.anyLocation,
+      linkedin: f.linkedin, projects: f.projects, categories: f.categories,
+      resumeText: f.resumeText,
+    });
+    setSaved(true);
+  }
+
   return (
     <div className="prof">
       <div className="prof-head">
         <div>
           <h1 className="prof-h">Your profile</h1>
-          <p className="prof-sub">This is what your agent presents to hiring agents — and what we match you on.</p>
+          <p className="prof-sub">This is what your agent presents to hiring agents — and what Claude matches you on.</p>
         </div>
         <button className="btn save-top" disabled={!parsed} onClick={doSave}>{saved ? <><Check size={16} /> Saved</> : "Save profile"}</button>
       </div>
@@ -389,37 +486,32 @@ function ProfilePage({ profile, onSave }) {
           <textarea className="ta" value={f.resumeText} onChange={(e) => set("resumeText", e.target.value)} />
           <div className="inline" style={{ marginTop: 10, flexWrap: "wrap" }}>
             <button className="btn" onClick={doParse}><Sparkles size={14} /> Parse resume</button>
-            <label className="btn-ghost" style={{ cursor: "pointer" }}><FileUp size={14} /> Upload PDF<input type="file" accept=".pdf" style={{ display: "none" }} onChange={(e) => { const x = e.target.files?.[0]; if (x) set("fileName", x.name); e.target.value = ""; }} /></label>
+            <label className="btn-ghost" style={{ cursor: "pointer" }}>
+              {pdfBusy ? <Loader2 size={14} className="spin" /> : <FileUp size={14} />} Upload PDF
+              <input type="file" accept="application/pdf,.pdf" style={{ display: "none" }} onChange={onPdf} />
+            </label>
           </div>
           {f.fileName && <div className="note">Resume: {f.fileName}</div>}
-
-          <div className="lbl">Transcript</div>
-          <textarea className="ta" style={{ minHeight: 110 }} placeholder="Paste your transcript — courses, grades…" value={f.transcriptText} onChange={(e) => set("transcriptText", e.target.value)} />
-          <div className="inline" style={{ marginTop: 10, flexWrap: "wrap" }}>
-            <button className="btn" onClick={parseTranscript}><Sparkles size={14} /> Parse transcript</button>
-            <label className="btn-ghost" style={{ cursor: "pointer" }}><FileText size={14} /> Upload transcript<input type="file" accept=".pdf" style={{ display: "none" }} onChange={(e) => { const x = e.target.files?.[0]; if (x) set("transcriptName", x.name); e.target.value = ""; }} /></label>
-          </div>
-          {f.transcriptName && <div className="note">Transcript: {f.transcriptName}</div>}
-          <div className="note">Parsing pulls coursework into your profile. PDF &amp; LinkedIn run server-side; local build parses pasted text.</div>
+          {f.pdfNote && <div className="note" style={{ color: "var(--red)" }}>{f.pdfNote}</div>}
+          <div className="note">Resume PDFs are parsed in your browser. Claude reads the full resume text when it scores tasks.</div>
 
           <div className="lbl">Projects &amp; portfolio</div>
           <div className="inline" style={{ flexWrap: "wrap" }}>
             <input className="inp" style={{ flex: 1, minWidth: 150 }} placeholder="project name or link…" value={projDraft} onChange={(e) => setProjDraft(e.target.value)} onKeyDown={(e) => e.key === "Enter" && addProj()} />
             <button className="btn-ghost" onClick={addProj}><Plus size={14} /></button>
-            <label className="btn-ghost" style={{ cursor: "pointer" }}><FileUp size={14} /> Upload<input type="file" multiple style={{ display: "none" }} onChange={(e) => { const names = [...(e.target.files || [])].map((x) => x.name); if (names.length) setF((x) => ({ ...x, projects: [...(x.projects || []), ...names] })); e.target.value = ""; }} /></label>
           </div>
           <div className="chips2">{(f.projects || []).map((p) => <span key={p} className="chip2"><FileText size={11} /> {p}<button onClick={() => set("projects", f.projects.filter((y) => y !== p))}><X size={11} /></button></span>)}</div>
         </div>
         <div className="prof-col">
           <div className="lbl">Task categories you want</div>
           <div className="pillrow">
-            {CATEGORIES.map(([k, label, Icon]) => (
+            {[["content", "Content", FileText], ["data", "Data", Database], ["research", "Research", Microscope], ["verification", "Verification", ShieldCheck], ["testing", "Testing", FlaskConical], ["creative", "Creative", Sparkles], ["real-world", "Real-world", MapPin]].map(([k, label, Icon]) => (
               <button key={k} className={`pill cat ${(f.categories || []).includes(k) ? "on" : ""}`} onClick={() => toggle("categories", k)}>{Icon && <Icon size={13} />}{label}</button>
             ))}
           </div>
 
           <div className="lbl">Primary location</div>
-          <input className="inp" placeholder="City" value={f.location} disabled={f.anyLocation} onChange={(e) => set("location", e.target.value)} />
+          <LocationInput value={f.location} disabled={f.anyLocation} onChange={(v) => set("location", v)} />
           <div className="lbl">Willing to commute — {f.radius} mi</div>
           <input type="range" min="0" max="100" step="5" value={f.radius} disabled={f.anyLocation} style={{ width: "100%", accentColor: "#2fd286" }} onChange={(e) => set("radius", +e.target.value)} />
           <div className="lbl">Additional locations</div>
@@ -435,7 +527,8 @@ function ProfilePage({ profile, onSave }) {
           {f.days.length ? <div className="note">Free: {f.days.join(", ")} · {f.times.join(", ") || "—"} · up to {f.hoursPerWeek}h/wk</div> : null}
 
           <div className="lbl">Skills</div>
-          <ChipInput items={f.skills} placeholder="add skill…" onAdd={(v) => !f.skills.includes(v) && set("skills", [...f.skills, v])} onRemove={(v) => set("skills", f.skills.filter((x) => x !== v))} />
+          <ChipInput items={f.skills} placeholder="add skill…" suggestions={mcwSkills} listId="mcw-skill-list" onAdd={(v) => !f.skills.includes(v) && set("skills", [...f.skills, v])} onRemove={(v) => set("skills", f.skills.filter((x) => x !== v))} />
+          {mcwSkills.length > 0 && <div className="note">{mcwSkills.length} skill suggestions live from the McClaw API</div>}
 
           <div className="lbl">Coursework</div>
           <ChipInput items={f.coursework} icon={GraduationCap} placeholder="add course…" onAdd={(v) => !f.coursework.includes(v) && set("coursework", [...f.coursework, v])} onRemove={(v) => set("coursework", f.coursework.filter((x) => x !== v))} />
@@ -445,11 +538,236 @@ function ProfilePage({ profile, onSave }) {
         </div>
       </div>
       <div className="prof-foot">
-        <button className="btn save" disabled={!parsed} onClick={() => { onSave({ name: "You", location: f.location, remoteOk: f.remoteOk, years: f.years || 4, reputation: f.reputation || 42, skills: f.skills, coursework: f.coursework, certifications: f.certifications, hoursPerWeek: f.hoursPerWeek, days: f.days, times: f.times, slots: [...f.slots] }); setSaved(true); }}>
-          {saved ? <><Check size={15} /> Saved</> : "Save profile"}
-        </button>
-        {saved && <span className="note">Suggestions updated — check the Suggested tab.</span>}
+        <button className="btn save" disabled={!parsed} onClick={doSave}>{saved ? <><Check size={15} /> Saved</> : "Save profile"}</button>
+        {saved && <span className="note">Saved — Claude will re-rank your tasks. Check the Suggested tab.</span>}
       </div>
+    </div>
+  );
+}
+
+/* ===================== AI match bar ===================== */
+function MatchBar({ aiKey, setAiKey, model, setModel, profile, scoring, progress, scoredCount, onScore, onCancel, goProfile }) {
+  return (
+    <div className="matchbar">
+      {aiKey ? (
+        <span className="mb-status"><Sparkles size={13} /> Claude ready</span>
+      ) : (
+        <span className="mb-status off"><KeyRound size={13} /> AI matching off</span>
+      )}
+      {!aiKey && (
+        <input className="mb-key inp" type="password" placeholder="Paste Anthropic API key (stays in your browser)…"
+          value={aiKey} onChange={(e) => setAiKey(e.target.value.trim())} />
+      )}
+      {aiKey && (
+        <>
+          <select className="mb-select" value={model} onChange={(e) => setModel(e.target.value)}>
+            <option value={MODELS.fast}>Haiku 4.5 · fast</option>
+            <option value={MODELS.quality}>Sonnet 4.6 · sharper</option>
+          </select>
+          {scoring ? (
+            <>
+              <div className="mb-prog"><div style={{ width: `${progress.total ? (progress.done / progress.total) * 100 : 0}%` }} /></div>
+              <span className="mb-status">{progress.done}/{progress.total}</span>
+              <button className="btn-ghost" onClick={onCancel}><X size={14} /> Cancel</button>
+            </>
+          ) : (
+            <button className="btn" disabled={!profile} title={!profile ? "Save your profile first" : ""} onClick={onScore}>
+              <Sparkles size={14} /> {scoredCount > 0 ? "Re-score with Claude" : "Score tasks with Claude"}
+            </button>
+          )}
+          {!profile && <button className="link" onClick={goProfile}>Set up profile →</button>}
+          {scoredCount > 0 && !scoring && <span className="mb-status">{scoredCount} scored</span>}
+        </>
+      )}
+      {!aiKey && <button className="btn-ghost" disabled style={{ opacity: .6 }}>Heuristic mode</button>}
+    </div>
+  );
+}
+
+/* ===================== McClaw connection bar ===================== */
+// Where the human pastes their McClaw X-API-Key. The key lives only in
+// localStorage; tasks are fetched live from /api/v1/tasks/ (via the dev proxy).
+function TasksBar({ mcclawKey, setMcclawKey, loading, error, count, onRefresh }) {
+  return (
+    <div className="matchbar">
+      {mcclawKey ? (
+        loading ? (
+          <span className="mb-status"><Loader2 size={13} className="spin" /> Loading McClaw tasks…</span>
+        ) : error ? (
+          <span className="mb-status off"><ShieldAlert size={13} /> McClaw: {error}</span>
+        ) : (
+          <span className="mb-status"><Database size={13} /> {count} live McClaw {count === 1 ? "task" : "tasks"}</span>
+        )
+      ) : (
+        <span className="mb-status off"><KeyRound size={13} /> Not connected to McClaw</span>
+      )}
+      <input
+        className="mb-key inp" type="password" placeholder="Paste your McClaw X-API-Key…"
+        value={mcclawKey} onChange={(e) => setMcclawKey(e.target.value.trim())}
+      />
+      <button className="btn-ghost" onClick={onRefresh} disabled={!mcclawKey || loading}>
+        {loading ? <Loader2 size={14} className="spin" /> : <Shuffle size={14} />} Refresh
+      </button>
+    </div>
+  );
+}
+
+/* ===================== Error boundary ===================== */
+// A render error anywhere below should show a recoverable message instead of
+// unmounting the whole app to a blank white screen. Keyed by tab in the tree so
+// switching tabs clears a caught error.
+class PageBoundary extends React.Component {
+  constructor(props) { super(props); this.state = { err: null }; }
+  static getDerivedStateFromError(err) { return { err }; }
+  componentDidCatch(err, info) { console.error("Page crashed:", err, info); }
+  render() {
+    if (this.state.err) {
+      return (
+        <div className="empty">
+          <div style={{ marginBottom: 6, color: "var(--txt)", fontWeight: 700 }}>Something went wrong loading this page.</div>
+          <div style={{ marginBottom: 16, fontSize: 13 }}>It's usually a saved profile from an older version. Resetting it fixes this.</div>
+          <div className="inline" style={{ justifyContent: "center" }}>
+            <button className="btn" onClick={this.props.onReset}>Reset profile &amp; reload</button>
+          </div>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
+
+/* ===================== App ===================== */
+const TABS = [["suggested", "Suggested"], ["all", "All available"], ["applied", "Applied"], ["profile", "Profile"]];
+export default function McClawProduct() {
+  const [screen, setScreen] = useState("landing");
+  const [tab, setTab] = useState("suggested");
+  const [profile, setProfile] = useState(() => load(LS.profile, null));
+  const [applied, setApplied] = useState([]);
+
+  // Live McClaw task board.
+  const [mcclawKey, setMcclawKey] = useState(() => load(LS.mcclawKey, ENV_MCCLAW_KEY));
+  const [tasks, setTasks] = useState([]);
+  const [tasksLoading, setTasksLoading] = useState(false);
+  const [tasksError, setTasksError] = useState(null);
+  const [taskNonce, setTaskNonce] = useState(0); // bump to force a refetch
+
+  const [aiKey, setAiKey] = useState(() => load(LS.anthropicKey, ENV_ANTHROPIC_KEY));
+  const [model, setModel] = useState(() => load(LS.model, DEFAULT_MODEL));
+  const [scores, setScores] = useState({});
+  const [scoring, setScoring] = useState(false);
+  const [progress, setProgress] = useState({ done: 0, total: 0 });
+  const scoreCtrl = useRef(null);
+
+  useEffect(() => save(LS.anthropicKey, aiKey), [aiKey]);
+  useEffect(() => save(LS.model, model), [model]);
+  useEffect(() => save(LS.profile, profile), [profile]);
+  useEffect(() => save(LS.mcclawKey, mcclawKey), [mcclawKey]);
+
+  // Pull the live task board whenever the key changes or the user hits Refresh.
+  useEffect(() => {
+    if (!mcclawKey) { setTasks([]); setTasksError(null); setTasksLoading(false); return; }
+    const ctrl = new AbortController();
+    setTasksLoading(true);
+    setTasksError(null);
+    fetchOpenTasks({ apiKey: mcclawKey, signal: ctrl.signal })
+      .then((list) => { setTasks(list); setTasksError(null); })
+      .catch((err) => { if (!ctrl.signal.aborted) setTasksError(err?.message || String(err)); })
+      .finally(() => { if (!ctrl.signal.aborted) setTasksLoading(false); });
+    return () => ctrl.abort();
+  }, [mcclawKey, taskNonce]);
+  const refreshTasks = () => setTaskNonce((n) => n + 1);
+
+  const scoredCount = useMemo(() => Object.values(scores).filter((s) => s && !s.error).length, [scores]);
+
+  async function runScoring(p) {
+    const prof = p || profile;
+    if (!aiKey || !prof) return;
+    const controller = new AbortController();
+    scoreCtrl.current = controller;
+    setScoring(true);
+    setProgress({ done: 0, total: 0 });
+    try {
+      await scoreTasksWithAI(aiKey, model, prof, tasks, {
+        signal: controller.signal,
+        onProgress: (done, total) => setProgress({ done, total }),
+        onResult: (id, res) => setScores((prev) => ({ ...prev, [id]: res })),
+      });
+    } catch (err) {
+      if (!controller.signal.aborted) console.error("AI scoring failed:", err);
+    } finally {
+      setScoring(false);
+      scoreCtrl.current = null;
+    }
+  }
+  function cancelScoring() {
+    scoreCtrl.current?.abort();
+    setProgress({ done: 0, total: 0 });
+  }
+
+  function handleSave(p) {
+    setProfile(p);
+    setScores({}); // profile changed → old scores are stale
+    if (aiKey) runScoring(p); // auto re-rank with Claude
+  }
+
+  const onApply = (id) => { if (!profile) { setTab("profile"); return; } setApplied((a) => (a.includes(id) ? a : [...a, id])); };
+  const enter = (t) => { setTab(t); setScreen("app"); };
+  // Recovery for the error boundary: a stale/corrupt saved profile is the usual
+  // cause, so clear it and reload to a clean state.
+  const resetProfile = () => { save(LS.profile, null); window.location.reload(); };
+
+  return (
+    <div className="root">
+      <style>{STYLE}</style>
+      {screen === "landing" ? (
+        <Landing onEnter={() => enter(profile ? "suggested" : "profile")} onBrowse={() => enter("all")} />
+      ) : (
+        <>
+          <header className="appbar">
+            <div className="ab-logo"><span className="lf" /> McClaw</div>
+            {TABS.map(([k, label]) => (
+              <button key={k} className={`tab ${tab === k ? "on" : ""}`} onClick={() => setTab(k)}>
+                {label}{k === "applied" && applied.length ? ` (${applied.length})` : ""}
+              </button>
+            ))}
+            <div className="ab-prof">{profile ? `${profile.location} · ${profile.hoursPerWeek}h/wk · rep ${profile.reputation}` : "no profile"}</div>
+          </header>
+          <TasksBar
+            mcclawKey={mcclawKey} setMcclawKey={setMcclawKey}
+            loading={tasksLoading} error={tasksError} count={tasks.length} onRefresh={refreshTasks}
+          />
+          <MatchBar
+            aiKey={aiKey} setAiKey={setAiKey} model={model} setModel={setModel}
+            profile={profile} scoring={scoring} progress={progress} scoredCount={scoredCount}
+            onScore={() => runScoring()} onCancel={cancelScoring} goProfile={() => setTab("profile")}
+          />
+          <main className="page">
+            <PageBoundary key={tab} onReset={resetProfile}>
+              {tab === "profile" ? (
+                <ProfilePage profile={profile} onSave={handleSave} />
+              ) : !mcclawKey ? (
+                <div className="empty">
+                  Connect to McClaw to load the live task board — paste your <b>X-API-Key</b> above.
+                  <div className="note" style={{ marginTop: 12 }}>
+                    No key yet? Register an agent (needs an Ethereum wallet + ETH on Base):<br />
+                    <code>npm i -g @mcclaw/sdk</code> → <code>mcclaw-agent register --name "McClaw Human Terminal"</code>
+                  </div>
+                </div>
+              ) : tasksLoading && !tasks.length ? (
+                <div className="empty"><Loader2 size={18} className="spin" /> Loading McClaw tasks…</div>
+              ) : tasksError && !tasks.length ? (
+                <div className="empty">Couldn't load McClaw tasks: {tasksError} <button className="link" onClick={refreshTasks}>Retry</button></div>
+              ) : (
+                <>
+                  {tab === "suggested" && <><h1 className="page-h">Suggested for you</h1><Suggested tasks={tasks} profile={profile} applied={applied} onApply={onApply} goProfile={() => setTab("profile")} scores={scores} /></>}
+                  {tab === "all" && <><h1 className="page-h">All available <span className="page-sub">{tasks.length} tasks</span></h1><AllAvailable tasks={tasks} profile={profile} applied={applied} onApply={onApply} scores={scores} /></>}
+                  {tab === "applied" && <><h1 className="page-h">Applied</h1><Applied tasks={tasks} applied={applied} /></>}
+                </>
+              )}
+            </PageBoundary>
+          </main>
+        </>
+      )}
     </div>
   );
 }
@@ -497,6 +815,16 @@ const STYLE = `
 .ab-prof{ margin-left:auto; font-family:'JetBrains Mono',monospace; font-size:12px; color:var(--mut); }
 .page{ padding:26px 28px 70px; max-width:1180px; margin:0 auto; }
 .page-h{ font-family:'Anton'; font-size:30px; letter-spacing:.5px; margin:0 0 18px; }
+.page-sub{ font-family:'JetBrains Mono',monospace; font-size:13px; color:var(--mut); margin-left:10px; letter-spacing:0; }
+
+/* match bar */
+.matchbar{ display:flex; align-items:center; gap:12px; flex-wrap:wrap; padding:12px 28px; background:rgba(14,31,23,.6); border-bottom:1px solid var(--line); }
+.mb-status{ font-family:'JetBrains Mono',monospace; font-size:12px; color:var(--em); display:inline-flex; align-items:center; gap:6px; white-space:nowrap; }
+.mb-status.off{ color:var(--mut); }
+.mb-key{ flex:1; min-width:220px; max-width:520px; }
+.mb-select{ background:var(--bg2); border:1px solid var(--line); color:var(--txt); border-radius:9px; padding:8px 10px; font-size:13px; cursor:pointer; }
+.mb-prog{ height:6px; background:var(--bg2); border:1px solid var(--line); border-radius:99px; overflow:hidden; width:160px; }
+.mb-prog > div{ height:100%; background:var(--em); transition:width .2s; }
 
 /* grid + cards */
 .grid{ display:grid; grid-template-columns:repeat(auto-fill,minmax(248px,1fr)); gap:16px; }
@@ -504,6 +832,7 @@ const STYLE = `
 .tc.refuse{ opacity:.92; border-color:#5a241c; }
 .tc-thumb{ position:relative; aspect-ratio:16/9; display:grid; place-items:center; }
 .tc-mp{ position:absolute; top:8px; right:8px; background:rgba(0,0,0,.55); color:var(--gold); font-weight:700; font-size:12px; padding:2px 8px; border-radius:7px; }
+.tc-ai-badge{ position:absolute; top:8px; left:8px; background:rgba(0,0,0,.55); color:#9bd0ff; font-family:'JetBrains Mono',monospace; font-size:9px; letter-spacing:1px; padding:2px 7px; border-radius:6px; }
 .tc-tier{ position:absolute; bottom:8px; left:8px; font-family:'JetBrains Mono',monospace; font-size:9.5px; letter-spacing:1px; text-transform:uppercase; padding:2px 7px; border-radius:6px; background:rgba(0,0,0,.5); }
 .tier-likely{ color:#2fd286; } .tier-reach{ color:#ffd27a; } .tier-stretch{ color:#9bd0ff; }
 .tc-body{ padding:13px 14px 14px; }
@@ -511,9 +840,16 @@ const STYLE = `
 .tc-agent{ font-family:'JetBrains Mono',monospace; font-size:11px; color:var(--mut); display:flex; align-items:center; gap:5px; }
 .tc-meta{ display:flex; gap:11px; flex-wrap:wrap; margin:10px 0; font-family:'JetBrains Mono',monospace; font-size:11px; color:var(--mut); }
 .tc-meta span{ display:inline-flex; align-items:center; gap:4px; }
-.tc-gate{ font-size:11px; color:#9bd0ff; margin-bottom:8px; }
+.tc-ai{ margin:8px 0 2px; }
+.tc-oneliner{ font-size:12.5px; font-weight:700; color:var(--txt); margin:0 0 4px; }
+.tc-rationale{ font-size:11.5px; line-height:1.5; color:#cfe6da; margin:0; }
+.tc-chips{ display:flex; flex-wrap:wrap; gap:5px; margin-top:8px; }
+.tc-chip{ font-family:'JetBrains Mono',monospace; font-size:10px; padding:2px 6px; border-radius:6px; display:inline-flex; align-items:center; gap:3px; }
+.tc-chip.have{ background:rgba(47,210,134,.14); color:var(--em); border:1px solid #1f5a40; }
+.tc-chip.miss{ background:rgba(255,255,255,.04); color:var(--mut); border:1px solid var(--line); }
+.tc-gate{ font-size:11px; color:#9bd0ff; margin:8px 0; }
 .tc-flag{ font-size:12px; color:var(--red); margin-top:8px; font-weight:600; }
-.tc-apply{ width:100%; background:var(--em); color:#06100b; border:none; border-radius:9px; padding:9px; font-weight:800; font-size:13px; cursor:pointer; display:flex; align-items:center; justify-content:center; gap:6px; }
+.tc-apply{ width:100%; margin-top:10px; background:var(--em); color:#06100b; border:none; border-radius:9px; padding:9px; font-weight:800; font-size:13px; cursor:pointer; display:flex; align-items:center; justify-content:center; gap:6px; }
 .tc-apply:hover{ background:#4ce39a; }
 .tc-apply.done{ background:var(--bg2); color:var(--em); border:1px solid var(--line); cursor:default; }
 
@@ -533,8 +869,6 @@ const STYLE = `
 .searchrow input::placeholder{ color:var(--mut); }
 .s-clear{ background:none; border:none; color:var(--mut); cursor:pointer; display:grid; padding:5px; border-radius:50%; flex:none; }
 .s-clear:hover{ color:var(--txt); background:var(--surf); }
-.s-mic{ background:var(--surf); border:1px solid var(--line); color:var(--mut); width:34px; height:34px; border-radius:50%; display:grid; place-items:center; cursor:pointer; flex:none; }
-.s-mic:hover{ color:var(--em); border-color:var(--em); }
 .fgroups{ display:flex; flex-direction:column; gap:13px; }
 .fgroup{ display:flex; align-items:center; gap:14px; flex-wrap:wrap; }
 .fglabel{ font-family:'JetBrains Mono',monospace; font-size:10px; letter-spacing:1.5px; text-transform:uppercase; color:var(--mut); width:72px; flex:none; }
@@ -542,13 +876,13 @@ const STYLE = `
 .schint{ font-family:'JetBrains Mono',monospace; font-size:10px; color:var(--mut); }
 .fbar{ display:flex; gap:9px; margin-bottom:20px; flex-wrap:wrap; }
 .fchip{ background:var(--surf); border:1px solid var(--line); color:var(--mut); border-radius:22px; padding:8px 15px; font-size:13px; font-weight:600; cursor:pointer; display:inline-flex; align-items:center; gap:7px; }
-.fchip:hover{ color:var(--txt); border-color:#2b5141; }
+.fchip:hover:not(:disabled){ color:var(--txt); border-color:#2b5141; }
+.fchip:disabled{ opacity:.4; cursor:not-allowed; }
 .fchip.f-easy.on{ background:#2fd286; color:#06100b; border-color:#2fd286; }
 .fchip.f-mid.on{ background:#ffd27a; color:#3a2a06; border-color:#ffd27a; }
 .fchip.f-hard.on{ background:#9bd0ff; color:#06223a; border-color:#9bd0ff; }
 .fchip.f-all.on{ background:var(--txt); color:#06100b; border-color:var(--txt); }
 .fchip.on{ background:var(--em); color:#06100b; border-color:var(--em); }
-.schedrow{ display:flex; gap:14px; align-items:center; flex-wrap:wrap; margin-bottom:20px; }
 .switchbar{ display:inline-flex; background:var(--surf); border:1px solid var(--line); border-radius:24px; padding:4px; gap:2px; }
 .seg{ background:none; border:none; color:var(--mut); border-radius:20px; padding:8px 15px; font-size:13px; font-weight:600; cursor:pointer; display:inline-flex; align-items:center; gap:7px; }
 .seg:hover:not(:disabled){ color:var(--txt); }
@@ -556,7 +890,8 @@ const STYLE = `
 .seg:disabled{ opacity:.4; cursor:not-allowed; }
 
 .empty{ background:var(--bg2); border:1px dashed var(--line); border-radius:16px; padding:34px; text-align:center; color:var(--mut); font-size:15px; }
-.link{ background:none; border:none; color:var(--em); font-weight:700; cursor:pointer; font-size:15px; }
+.empty code{ font-family:'JetBrains Mono',monospace; background:var(--surf); border:1px solid var(--line); border-radius:5px; padding:2px 6px; font-size:.86em; color:var(--em); white-space:nowrap; }
+.link{ background:none; border:none; color:var(--em); font-weight:700; cursor:pointer; font-size:14px; }
 
 .applied-list{ display:flex; flex-direction:column; gap:10px; }
 .ap-row{ display:flex; align-items:center; gap:14px; background:var(--surf); border:1px solid var(--line); border-radius:14px; padding:14px 16px; }
@@ -577,10 +912,8 @@ const STYLE = `
 .toggle{ display:inline-flex; align-items:center; gap:8px; font-size:14px; margin-top:12px; }
 .pillrow{ display:flex; flex-wrap:wrap; gap:8px; }
 .pill{ background:var(--bg2); border:1px solid var(--line); color:var(--mut); border-radius:10px; padding:9px 14px; font-size:13px; font-weight:600; cursor:pointer; display:inline-flex; flex-direction:column; align-items:center; gap:1px; min-width:46px; }
-.pill small{ font-family:'JetBrains Mono',monospace; font-size:9px; opacity:.7; font-weight:400; }
 .pill:hover{ color:var(--txt); border-color:#2b5141; }
 .pill.on{ background:var(--em); color:#06100b; border-color:var(--em); }
-.pill.on small{ opacity:.85; }
 .pill.cat{ flex-direction:row; gap:7px; min-width:auto; padding:9px 13px; }
 .cat-tag{ display:inline-block; margin-top:8px; font-family:'JetBrains Mono',monospace; font-size:9px; letter-spacing:1px; text-transform:uppercase; color:var(--mut); border:1px solid var(--line); border-radius:5px; padding:2px 7px; }
 .whenhint{ font-size:12px; color:var(--mut); margin-bottom:10px; }
@@ -594,53 +927,17 @@ const STYLE = `
 .chip2{ background:var(--bg2); border:1px solid var(--line); border-radius:8px; padding:4px 9px; font-family:'JetBrains Mono',monospace; font-size:12px; color:#cfe6da; display:inline-flex; gap:6px; align-items:center; }
 .chip2 button{ background:none; border:none; cursor:pointer; color:var(--mut); display:grid; padding:0; }
 .btn{ background:var(--em); color:#06100b; border:none; border-radius:10px; padding:10px 16px; font-weight:800; font-size:14px; cursor:pointer; display:inline-flex; align-items:center; gap:7px; }
-.btn:hover{ background:#4ce39a; } .btn:disabled{ opacity:.45; cursor:default; }
+.btn:hover:not(:disabled){ background:#4ce39a; } .btn:disabled{ opacity:.45; cursor:default; }
 .btn-ghost{ background:var(--bg2); color:var(--txt); border:1px solid var(--line); border-radius:10px; padding:9px 14px; font-weight:700; font-size:14px; cursor:pointer; display:inline-flex; align-items:center; gap:7px; }
+.btn-ghost.connected{ border-color:var(--em); color:var(--em); }
 .note{ font-family:'JetBrains Mono',monospace; font-size:10.5px; color:var(--mut); margin-top:8px; }
 .prof-foot{ display:flex; align-items:center; gap:14px; margin-top:26px; }
 .save{ padding:12px 26px; }
-/* bitmap/LED display layer — display elements only, body stays legible */
+.save-top{ padding:12px 24px; font-size:15px; white-space:nowrap; box-shadow:0 8px 24px -10px rgba(47,210,134,.5); }
+.prof-head{ display:flex; justify-content:space-between; align-items:flex-start; gap:16px; position:sticky; top:60px; background:var(--bg); z-index:10; padding:12px 0 14px; border-bottom:1px solid var(--line); margin-bottom:10px; }
+.spin{ animation:spin 1s linear infinite; }
+@keyframes spin{ to{ transform:rotate(360deg); } }
+/* display font layer */
 .hero-logo, .hero-h1, .ab-logo, .page-h, .prof-h, .tier-head h2{ font-family:'Jersey 25','Anton',sans-serif !important; letter-spacing:1.5px; font-weight:400 !important; }
 .hero-h1{ line-height:.92 !important; }
-.prof-head{ display:flex; justify-content:space-between; align-items:flex-start; gap:16px; position:sticky; top:60px; background:var(--bg); z-index:10; padding:12px 0 14px; border-bottom:1px solid var(--line); margin-bottom:10px; }
-.save-top{ padding:12px 24px; font-size:15px; white-space:nowrap; box-shadow:0 8px 24px -10px rgba(47,210,134,.5); }
-.btn-ghost.connected{ border-color:var(--em); color:var(--em); }
 `;
-
-/* ===================== App ===================== */
-const TABS = [["suggested", "Suggested"], ["all", "All available"], ["applied", "Applied"], ["profile", "Profile"]];
-export default function McClawProduct() {
-  const [screen, setScreen] = useState("landing");
-  const [tab, setTab] = useState("suggested");
-  const [profile, setProfile] = useState(null);
-  const [applied, setApplied] = useState([]);
-  const onApply = (id) => { if (!profile) { setTab("profile"); return; } setApplied((a) => (a.includes(id) ? a : [...a, id])); };
-  const enter = (t) => { setTab(t); setScreen("app"); };
-
-  return (
-    <div className="root">
-      <style>{STYLE}</style>
-      {screen === "landing" ? (
-        <Landing onEnter={() => enter(profile ? "suggested" : "profile")} onBrowse={() => enter("all")} />
-      ) : (
-        <>
-          <header className="appbar">
-            <div className="ab-logo"><span className="lf" /> McClaw</div>
-            {TABS.map(([k, label]) => (
-              <button key={k} className={`tab ${tab === k ? "on" : ""}`} onClick={() => setTab(k)}>
-                {label}{k === "applied" && applied.length ? ` (${applied.length})` : ""}
-              </button>
-            ))}
-            <div className="ab-prof">{profile ? `${profile.location} · ${profile.hoursPerWeek}h/wk · rep ${profile.reputation}` : "no profile"}</div>
-          </header>
-          <main className="page">
-            {tab === "suggested" && <><h1 className="page-h">Suggested for you</h1><Suggested profile={profile} applied={applied} onApply={onApply} goProfile={() => setTab("profile")} /></>}
-            {tab === "all" && <><h1 className="page-h">All available</h1><AllAvailable profile={profile} applied={applied} onApply={onApply} /></>}
-            {tab === "applied" && <><h1 className="page-h">Applied</h1><Applied applied={applied} profile={profile} onApply={onApply} /></>}
-            {tab === "profile" && <ProfilePage profile={profile} onSave={setProfile} />}
-          </main>
-        </>
-      )}
-    </div>
-  );
-}
