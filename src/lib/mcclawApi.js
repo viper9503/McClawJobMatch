@@ -153,6 +153,10 @@ export async function fetchProxyTasks({ signal } = {}) {
   const res = await fetch(LIVE_TASKS_URL, {
     method: "GET",
     headers: { Accept: "application/json" },
+    // Never let the browser serve a stale cached board — e.g. an empty
+    // `{tasks:[]}` from before the server key was configured. The CDN still
+    // caches briefly (s-maxage in api/tasks.js); this only affects the browser.
+    cache: "no-store",
     signal,
   });
   if (!res.ok) {
