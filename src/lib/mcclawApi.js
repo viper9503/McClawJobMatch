@@ -15,7 +15,7 @@
 // description. We normalize whatever we get into a single Job shape the rest of
 // the app understands.
 
-import { MCCLAW_API_BASE } from "../config.js";
+import { MCCLAW_API_BASE, LIVE_TASKS_URL } from "../config.js";
 
 const MCLAW_DECIMALS = 18n;
 
@@ -130,6 +130,44 @@ export async function fetchOpenTasks({
 
   // Guarantee unique ids: they key both the results map and React list keys, so
   // a duplicate from the feed would clobber a score and warn on render.
+  const seen = new Set();
+  return tasks.map((t, i) => {
+    const job = normalizeTask(t);
+    if (seen.has(job.id)) job.id = `${job.id}-${i}`;
+    seen.add(job.id);
+    return job;
+  });
+}
+
+/**
+ * Fetch the live board via the **server-side proxy** (`api/tasks.js` in prod,
+ * mirrored by the Vite dev middleware) instead of a browser-held key. The proxy
+ * injects the agent X-API-Key server-side, so — unlike {@link fetchOpenTasks} —
+ * no key ever touches the browser bundle. Resolves to `[]` when no server key is
+ * configured (the proxy answers `{ tasks: [] }`), letting the app fall back to
+ * the demo board. Returns normalized Jobs.
+ * @param {object} opts
+ * @param {AbortSignal} [opts.signal]
+ */
+export async function fetchProxyTasks({ signal } = {}) {
+  const res = await fetch(LIVE_TASKS_URL, {
+    method: "GET",
+    headers: { Accept: "application/json" },
+    signal,
+  });
+  if (!res.ok) {
+    const body = await safeText(res);
+    throw new McclawError(
+      `McClaw proxy ${res.status} ${res.statusText}` + (body ? ` — ${body}` : ""),
+      res.status,
+      res.headers.get("retry-after"),
+    );
+  }
+  const data = await res.json();
+  const tasks = extractTaskArray(data);
+
+  // Same unique-id guard as fetchOpenTasks: ids key both the score map and the
+  // React list, so a duplicate from the feed would clobber a score on render.
   const seen = new Set();
   return tasks.map((t, i) => {
     const job = normalizeTask(t);

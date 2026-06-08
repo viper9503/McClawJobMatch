@@ -8,7 +8,7 @@ import { MODELS } from "../config.js";
 // Both keys live only in localStorage; nothing is sent anywhere but those APIs.
 export default function ConnectBar({
   aiKey, setAiKey, model, setModel, profile, scoring, progress, scoredCount, onScore, onCancel, goProfile,
-  mcclawKey, setMcclawKey, tasksLoading, tasksError, liveCount, onRefresh,
+  mcclawKey, setMcclawKey, tasksLoading, tasksError, liveCount, liveActive, onRefresh,
 }) {
   return (
     <div className="matchbar">
@@ -44,17 +44,17 @@ export default function ConnectBar({
 
       <span className="mb-sep" />
 
-      {/* --- McClaw live task feed --- */}
-      {mcclawKey
-        ? tasksLoading
-          ? <span className="mb-status"><Loader2 size={13} className="spin" /> Loading…</span>
-          : tasksError
-            ? <span className="mb-status off"><ShieldAlert size={13} /> McClaw: {tasksError}</span>
-            : <span className="mb-status"><Database size={13} /> {liveCount} live {liveCount === 1 ? "task" : "tasks"}</span>
-        : <span className="mb-status off"><Database size={13} /> Demo board · connect McClaw for live tasks</span>}
+      {/* --- McClaw live task feed (server-side proxy and/or client X-API-Key) --- */}
+      {tasksLoading
+        ? <span className="mb-status"><Loader2 size={13} className="spin" /> Loading…</span>
+        : tasksError
+          ? <span className="mb-status off"><ShieldAlert size={13} /> McClaw: {tasksError}</span>
+          : liveActive
+            ? <span className="mb-status"><Database size={13} /> {liveCount} live {liveCount === 1 ? "task" : "tasks"}</span>
+            : <span className="mb-status off"><Database size={13} /> Demo board · connect McClaw for live tasks</span>}
       <input className="mb-key inp" type="password" placeholder="McClaw X-API-Key…"
         value={mcclawKey} onChange={(e) => setMcclawKey(e.target.value.trim())} />
-      <button className="btn-ghost" onClick={onRefresh} disabled={!mcclawKey || tasksLoading}>
+      <button className="btn-ghost" onClick={onRefresh} disabled={(!mcclawKey && !liveActive) || tasksLoading}>
         {tasksLoading ? <Loader2 size={14} className="spin" /> : <Shuffle size={14} />} Refresh
       </button>
     </div>

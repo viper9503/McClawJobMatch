@@ -4,7 +4,7 @@ import { Settings } from "lucide-react";
 import { STYLE } from "./styles.js";
 import { TASKS } from "./data/tasks.js";
 import { scoreTasksWithAI } from "./lib/aiScore.js";
-import { fetchOpenTasks } from "./lib/mcclawApi.js";
+import { fetchOpenTasks, fetchProxyTasks } from "./lib/mcclawApi.js";
 import { load, save } from "./lib/storage.js";
 import { LS, DEFAULT_MODEL, ENV_ANTHROPIC_KEY, ENV_MCCLAW_KEY, MAX_LLM_JOBS } from "./config.js";
 
@@ -43,8 +43,11 @@ export default function App() {
   const [progress, setProgress] = useState({ done: 0, total: 0 });
   const scoreCtrl = useRef(null);
 
-  // The active board: live McClaw tasks when connected + loaded, else the demo set.
-  const board = useMemo(() => (mcclawKey && liveTasks.length ? liveTasks : TASKS), [mcclawKey, liveTasks]);
+  // The active board: live McClaw tasks once any source loads them, else the demo
+  // set. "Live" can come from the server-side proxy (no browser key) or the
+  // client-side X-API-Key — see the fetch effect below.
+  const board = useMemo(() => (liveTasks.length ? liveTasks : TASKS), [liveTasks]);
+  const liveActive = liveTasks.length > 0;
   // Switching boards (demo ↔ live) makes any existing Claude scores stale — their
   // task ids belong to the previous board — so drop them.
   useEffect(() => { setScores({}); }, [board]);
@@ -56,15 +59,30 @@ export default function App() {
   useEffect(() => save(LS.applied, applied), [applied]);
   useEffect(() => save(LS.jobStatus, jobStatus), [jobStatus]);
 
-  // Pull the live board whenever the key changes or the user hits Refresh.
+  // Pull the live board on mount, when the key changes, or on Refresh. Two
+  // sources, in priority order:
+  //   1. server-side proxy (/api/tasks) — the deploy injects the agent key, so
+  //      nothing is held in the browser. Used automatically when configured;
+  //      answers an empty list otherwise (and a missing proxy is swallowed, so
+  //      the default demo experience never shows a spurious error).
+  //   2. client-side X-API-Key (mcclawKey) pasted into the connect bar.
+  // Whichever returns tasks wins; with neither, `board` stays on the demo set.
   useEffect(() => {
-    if (!mcclawKey) { setLiveTasks([]); setTasksError(null); setTasksLoading(false); return; }
     const ctrl = new AbortController();
     setTasksLoading(true); setTasksError(null);
-    fetchOpenTasks({ apiKey: mcclawKey, signal: ctrl.signal })
-      .then((list) => { setLiveTasks(list); setTasksError(null); })
-      .catch((err) => { if (!ctrl.signal.aborted) setTasksError(err?.message || String(err)); })
-      .finally(() => { if (!ctrl.signal.aborted) setTasksLoading(false); });
+    (async () => {
+      try {
+        let list = await fetchProxyTasks({ signal: ctrl.signal }).catch(() => []);
+        if (!list.length && mcclawKey) {
+          list = await fetchOpenTasks({ apiKey: mcclawKey, signal: ctrl.signal });
+        }
+        if (!ctrl.signal.aborted) { setLiveTasks(list); setTasksError(null); }
+      } catch (err) {
+        if (!ctrl.signal.aborted) setTasksError(err?.message || String(err));
+      } finally {
+        if (!ctrl.signal.aborted) setTasksLoading(false);
+      }
+    })();
     return () => ctrl.abort();
   }, [mcclawKey, taskNonce]);
   const refreshTasks = () => setTaskNonce((n) => n + 1);
@@ -133,7 +151,7 @@ export default function App() {
             scoring={scoring} progress={progress} scoredCount={scoredCount}
             onScore={() => runScoring()} onCancel={cancelScoring} goProfile={() => setTab("profile")}
             mcclawKey={mcclawKey} setMcclawKey={setMcclawKey}
-            tasksLoading={tasksLoading} tasksError={tasksError} liveCount={liveTasks.length} onRefresh={refreshTasks}
+            tasksLoading={tasksLoading} tasksError={tasksError} liveCount={liveTasks.length} liveActive={liveActive} onRefresh={refreshTasks}
           />
           <main className="page">
             <PageBoundary key={tab} onReset={resetProfile}>

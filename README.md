@@ -62,7 +62,10 @@ npm run dev      # http://localhost:5173
 
 Copy `.env.example` → `.env` to pre-fill the Anthropic/McClaw keys and model instead
 of typing them. `VITE_`-prefixed vars are inlined into the bundle (visible to anyone
-with the page) — fine for a local demo, not for shipping a real key.
+with the page) — fine for a local demo, not for shipping a real key. The non-`VITE_`
+`MCCLAW_API_KEY` is the exception: it's read only server-side by the `api/` proxy (and
+the dev middleware), so it powers the live board *without* exposing the key — see
+*Going live*.
 
 ## Project layout
 
@@ -82,7 +85,8 @@ src/
     scorer.js             Claude calls (cached prefix, forced-tool output, concurrency)
     anthropic.js          browser SDK client (dangerouslyAllowBrowser)
     resume.js             pdf.js → text
-    mcclawApi.js          live McClaw client (tasks + public config endpoints)
+    mcclawApi.js          live McClaw client: fetchProxyTasks (server-side /api/tasks),
+                          fetchOpenTasks (client X-API-Key), public config endpoints
     storage.js            localStorage helpers
   components/
     Landing.jsx           hero (aurora canvas, live board), nav panels
@@ -92,17 +96,43 @@ src/
     Suggested.jsx · AllAvailable.jsx · Applied.jsx · WorkingOn.jsx · Settings.jsx
     PageBoundary.jsx      error boundary
     profile/              ProfilePage + ChipInput / WhenGrid / CategoryPicker / TypingBox
+api/                      serverless (Vercel) proxies — inject a server-side key
+    tasks.js              GET /api/tasks  → live McClaw board (key never in browser)
+    apply.js              GET /api/apply  → verify a task is still open
+agent/                    standalone Node agent bot (@mcclaw/sdk) — see agent/README.md
 ```
 
 ## Going live (real McClaw API instead of the demo board)
 
 The live task board (`GET /api/v1/tasks/`) is **not public** — it accepts an agent
 `X-API-Key` (minted by registering an agent on Base mainnet with a funded wallet via
-the `mcclaw-agent` CLI) or a human session cookie. Paste a key into the connect bar
-and the board swaps to live tasks (Claude infers skills/category/location from the
-free-text descriptions). For a static deploy you also need an `/api → mcclaw.io`
-proxy in front of the build (the Vite dev proxy handles this locally), and ideally
-move the Anthropic call behind a backend.
+the `mcclaw-agent` CLI) or a human session cookie. The app supports **two ways** to
+go live; whichever returns tasks replaces the demo board (Claude then infers
+skills/category/location from the free-text descriptions):
+
+1. **Server-side proxy (recommended — key never touches the browser).** Set a
+   non-`VITE_` `MCCLAW_API_KEY` in `.env`. The `/api/tasks` endpoint
+   ([`api/tasks.js`](api/tasks.js), a Vercel serverless function — mirrored in dev by
+   a Vite middleware in [`vite.config.js`](vite.config.js)) injects the key
+   server-side and proxies the marketplace. With no key set it returns
+   `{ tasks: [] }`, so the app quietly stays on the demo board. The app calls this on
+   load, so live tasks appear automatically when the deploy is configured.
+2. **Client-side key.** Paste an `X-API-Key` into the connect bar. It's held only in
+   `localStorage` and sent straight to `/api/v1/tasks/` — convenient for a local demo,
+   but the key lives in the browser.
+
+For a static deploy you also need the `/api/v1 → mcclaw.io` proxy in front of the
+build (the Vite dev proxy handles this locally) and the `api/` functions deployed,
+and ideally move the Anthropic call behind a backend too.
+
+### Agent side (`agent/`)
+
+The **agent** half of the marketplace lives in [`agent/`](agent/) — a standalone Node
+bot (`@mcclaw/sdk`) that posts/funds tasks, watches on-chain events, and
+auto-accepts human applications. It's self-contained (`cd agent && npm install`) with
+its own [README](agent/README.md). ⚠️ It moves real value on **Base mainnet** — its
+wallet key lives only in `agent/.env.agent` (gitignored) and is **never** bundled
+into the browser app.
 
 ## Caveats (hackathon honesty)
 
