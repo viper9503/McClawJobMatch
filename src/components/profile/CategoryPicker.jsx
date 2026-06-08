@@ -6,7 +6,7 @@ import { CATEGORIES, CAT_META } from "../../data/tasks.js";
 // chooses here boosts those categories in the matcher and is woven into the
 // dossier Claude reads.
 export default function CategoryPicker({ selected, onToggle, wants, onWants }) {
-  const top = [...CATEGORIES].sort((a, b) => CAT_META[b[0]].open - CAT_META[a[0]].open).slice(0, 3);
+  const top = CATEGORIES.slice(0, 3);
   return (
     <section className="cgp">
       <div className="lbl" style={{ marginTop: 0 }}>Task categories you want</div>
@@ -14,7 +14,7 @@ export default function CategoryPicker({ selected, onToggle, wants, onWants }) {
       <div className="cgp-grid">
         {CATEGORIES.map(([k, label, Icon]) => (
           <button key={k} className={`cgp-card ${selected.includes(k) ? "on" : ""}`} onClick={() => onToggle(k)}>
-            <div className="cgp-h"><Icon size={20} /><span className="cgp-open">{CAT_META[k].open} open</span></div>
+            <div className="cgp-h"><Icon size={20} /></div>
             <b>{label}</b>
             <p>{CAT_META[k].desc}</p>
             {selected.includes(k) && <span className="cgp-check"><Check size={13} /></span>}
@@ -26,7 +26,7 @@ export default function CategoryPicker({ selected, onToggle, wants, onWants }) {
       <div className="cgp-topbar bottom">
         <span className="cgp-toplbl"><Flame size={13} /> Top categories</span>
         {top.map(([k, label, Icon]) => (
-          <button key={k} className={`cgp-topchip ${selected.includes(k) ? "on" : ""}`} onClick={() => onToggle(k)}><Icon size={13} />{label}<i>{CAT_META[k].open}</i></button>
+          <button key={k} className={`cgp-topchip ${selected.includes(k) ? "on" : ""}`} onClick={() => onToggle(k)}><Icon size={13} />{label}</button>
         ))}
       </div>
     </section>

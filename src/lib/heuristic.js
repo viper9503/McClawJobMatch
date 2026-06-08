@@ -2,7 +2,6 @@
 // (or without) Claude: a weighted heuristic score, the scam-refusal guard, the
 // tiering/difficulty buckets, and a keyword resume parser.
 import { TrendingUp, Flame, Mountain } from "lucide-react";
-import { TASK_CAT, TASK_WINDOWS } from "../data/tasks.js";
 
 const WEIGHTS = { skills: 0.4, location: 0.15, experience: 0.15, availability: 0.15, reputation: 0.15 };
 const COURSE = { spanish: ["spanish", "translation"], "creative writing": ["writing"], "intro to photography": ["photography"] };
@@ -31,7 +30,9 @@ export function scoreTask(p, t) {
   const reputation = clamp((p.reputation || 0) / 100), gated = (p.reputation || 0) < (t.minReputation || 0);
   let total = WEIGHTS.skills * skills + WEIGHTS.location * location + WEIGHTS.experience * experience + WEIGHTS.availability * availability + WEIGHTS.reputation * reputation;
   if (gated) total *= 0.55;
-  const cat = TASK_CAT[t.id];
+  // Live tasks have no structured category until Claude infers one; the AI score
+  // (m.category) carries the category boost instead, so keep this empty here.
+  const cat = t.category || "";
   if (p.categories && p.categories.length && cat && p.categories.includes(cat)) total = Math.min(1, total + 0.06);
   if (p.wants) {
     const ws = p.wants.toLowerCase().split(/[^a-z]+/).filter((w) => w.length > 3);
@@ -79,11 +80,6 @@ export function fitsSchedule(task, profile) {
   if (!profile) return null;
   if (task.schedule === "async" || task.schedule === "flexible") return true;
   if ((task.timeCommitmentHours || 0) > (profile.hoursPerWeek || 0)) return false;
-  const w = TASK_WINDOWS[task.id];
-  if (w) {
-    if (w.days && profile.days?.length && !w.days.some((d) => profile.days.includes(d))) return false;
-    if (w.times && profile.times?.length && !w.times.some((t) => profile.times.includes(t))) return false;
-  }
   return true;
 }
 

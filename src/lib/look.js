@@ -4,9 +4,6 @@ import {
   Camera, Languages, Mic, Stamp, Utensils, Database, ShieldCheck, Microscope,
   PenLine, MessageCircle, Wrench, Briefcase,
 } from "lucide-react";
-import { TASK_IMG, HYBRID } from "../data/tasks.js";
-import { TASK_PHOTO } from "../data/photos.js";
-
 // Stable string hash → used to pick a gradient/photo seed deterministically.
 export function hash(s) {
   let h = 0;
@@ -35,14 +32,33 @@ export function iconFor(task, m) {
   return Briefcase;
 }
 
-// Bundled base64 photo when we have one, else a seeded loremflickr image
-// (used for live tasks that have no bundled art).
-export function photoSrc(task, w, h) {
-  return TASK_PHOTO[task.id] || `https://loremflickr.com/${w}/${h}/${TASK_IMG[task.id] || "abstract"}?lock=${hash(task.id)}`;
+// Pick a themed image keyword from the task's words so live cards aren't all the
+// same. Mirrors iconFor's buckets so the photo and icon stay roughly in sync.
+function imgKeyword(task) {
+  const s = task.skills || [];
+  const text = `${task.title} ${task.desc}`.toLowerCase();
+  const has = (...w) => w.some((x) => text.includes(x));
+  if (s.includes("photography") || has("photo", "image", "camera", "golden hour")) return "photography,camera";
+  if (s.includes("spanish") || s.includes("translation") || has("translat", "bilingual", "language")) return "language,books";
+  if (s.includes("palate") || has("food", "taste", "menu", "recipe", "coffee", "flavor")) return "food";
+  if (has("writ", "blog", "article", "copy", "caption", "edit", "proofread", "outreach")) return "writing,desk";
+  if (has("research", "analy", "compare", "sources", "summar")) return "library,research";
+  if (s.includes("voice") || has("voice", "audio", "record", "transcri", "podcast")) return "microphone,studio";
+  if (has("verif", "confirm", "inspect", "notar", "witness", "review", "quality")) return "documents,signature";
+  if (has("data", "label", "annotat", "dataset", "spreadsheet", "ocr")) return "data,technology";
+  if (has("web", "site", "app", "test", "qa", "device", "checkout", "prototype")) return "laptop,technology";
+  if (has("map", "location", "address", "drive", "travel", "storefront", "street", "hardware")) return "city,street";
+  return "work,office";
 }
 
-// remote | hybrid | onsite.
-export const modeOf = (t) => (HYBRID.has(t.id) ? "hybrid" : t.remote ? "remote" : "onsite");
+// Seeded loremflickr image keyed off the task's content. Live McClaw tasks have
+// no bundled art, so we derive a relevant-ish stock photo from their words.
+export function photoSrc(task, w, h) {
+  return `https://loremflickr.com/${w}/${h}/${imgKeyword(task)}?lock=${hash(task.id)}`;
+}
+
+// remote | onsite. (Live McClaw tasks default to remote/async.)
+export const modeOf = (t) => (t.remote ? "remote" : "onsite");
 
 // One-paragraph "About this task" blurb for the task modal.
 export function genAbout(t) {

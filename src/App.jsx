@@ -2,7 +2,6 @@ import React, { useState, useMemo, useRef, useEffect } from "react";
 import { Settings } from "lucide-react";
 
 import { STYLE } from "./styles.js";
-import { TASKS } from "./data/tasks.js";
 import { scoreTasksWithAI } from "./lib/aiScore.js";
 import { fetchOpenTasks, fetchProxyTasks } from "./lib/mcclawApi.js";
 import { load, save } from "./lib/storage.js";
@@ -20,15 +19,39 @@ import SettingsPage from "./components/Settings.jsx";
 import ProfilePage from "./components/profile/ProfilePage.jsx";
 
 const TABS = [["suggested", "Suggested"], ["all", "All available"], ["working", "Working on"], ["applied", "Applied"], ["profile", "Profile"]];
+const BOARD_TABS = new Set(["suggested", "all", "working", "applied"]);
+
+// Shown on the board tabs when no live tasks have loaded. There is no mock
+// fallback anymore, so this is where we explain how to get the live feed flowing.
+function EmptyBoard({ loading, error, onRefresh }) {
+  return (
+    <div style={{ textAlign: "center", padding: "64px 20px", maxWidth: 560, margin: "0 auto", color: "#9fb8b0" }}>
+      <div style={{ fontSize: 40, marginBottom: 12 }}>{loading ? "⏳" : "📭"}</div>
+      <h2 style={{ color: "#e6f1ec", marginBottom: 10 }}>
+        {loading ? "Loading live tasks from McClaw…" : "No live tasks right now"}
+      </h2>
+      {!loading && (
+        <p style={{ lineHeight: 1.5, marginBottom: 18 }}>
+          {error
+            ? <>Couldn't reach McClaw: <b style={{ color: "#ff8a72" }}>{error}</b>.</>
+            : <>The board pulls open gigs straight from the McClaw marketplace. If you just deployed,
+              set <code>MCCLAW_API_KEY</code> in your Vercel project (Settings → Environment Variables),
+              then redeploy. Running locally? Add it to <code>.env</code>.</>}
+        </p>
+      )}
+      {!loading && <button className="btn" onClick={onRefresh}>Refresh</button>}
+    </div>
+  );
+}
 
 export default function App() {
   const [screen, setScreen] = useState("landing");
   const [tab, setTab] = useState("suggested");
   const [profile, setProfile] = useState(() => load(LS.profile, null));
-  const [applied, setApplied] = useState(() => load(LS.applied, ["t1", "t3"]));
-  const [jobStatus, setJobStatus] = useState(() => load(LS.jobStatus, { t1: "in_progress", t3: "submitted" }));
+  const [applied, setApplied] = useState(() => load(LS.applied, []));
+  const [jobStatus, setJobStatus] = useState(() => load(LS.jobStatus, {}));
 
-  // Live McClaw task board (optional — the demo TASKS are the default).
+  // Live McClaw task board (the only board — tasks come live from the API).
   const [mcclawKey, setMcclawKey] = useState(() => load(LS.mcclawKey, ENV_MCCLAW_KEY));
   const [liveTasks, setLiveTasks] = useState([]);
   const [tasksLoading, setTasksLoading] = useState(false);
@@ -43,14 +66,14 @@ export default function App() {
   const [progress, setProgress] = useState({ done: 0, total: 0 });
   const scoreCtrl = useRef(null);
 
-  // The active board: live McClaw tasks once any source loads them, else the demo
-  // set. "Live" can come from the server-side proxy (no browser key) or the
-  // client-side X-API-Key — see the fetch effect below.
-  const board = useMemo(() => (liveTasks.length ? liveTasks : TASKS), [liveTasks]);
+  // The board is the live McClaw feed — from the server-side proxy (no browser
+  // key) or the client-side X-API-Key (see the fetch effect below). There is no
+  // mock fallback; when nothing has loaded yet the board is simply empty.
+  const board = liveTasks;
   const liveActive = liveTasks.length > 0;
-  // Switching boards (demo ↔ live) makes any existing Claude scores stale — their
-  // task ids belong to the previous board — so drop them.
-  useEffect(() => { setScores({}); }, [board]);
+  // A fresh board makes any existing Claude scores stale (their ids belong to the
+  // previous fetch), so drop them when the loaded set changes.
+  useEffect(() => { setScores({}); }, [liveTasks]);
 
   useEffect(() => save(LS.anthropicKey, aiKey), [aiKey]);
   useEffect(() => save(LS.model, model), [model]);
@@ -64,9 +87,9 @@ export default function App() {
   //   1. server-side proxy (/api/tasks) — the deploy injects the agent key, so
   //      nothing is held in the browser. Used automatically when configured;
   //      answers an empty list otherwise (and a missing proxy is swallowed, so
-  //      the default demo experience never shows a spurious error).
+  //      an unconfigured/offline app never shows a spurious error).
   //   2. client-side X-API-Key (mcclawKey) pasted into the connect bar.
-  // Whichever returns tasks wins; with neither, `board` stays on the demo set.
+  // Whichever returns tasks wins; with neither, the board is empty (empty-state).
   useEffect(() => {
     const ctrl = new AbortController();
     setTasksLoading(true); setTasksError(null);
@@ -155,12 +178,16 @@ export default function App() {
           />
           <main className="page">
             <PageBoundary key={tab} onReset={resetProfile}>
+              {BOARD_TABS.has(tab) && board.length === 0 ? (
+                <EmptyBoard loading={tasksLoading} error={tasksError} onRefresh={refreshTasks} />
+              ) : (<>
               {tab === "suggested" && <><h1 className="page-h">Suggested for you</h1><Suggested tasks={board} profile={profile} applied={applied} onApply={onApply} scores={scores} goProfile={() => setTab("profile")} onQuiz={() => setScreen("quiz")} /></>}
               {tab === "all" && <><h1 className="page-h">All available <span className="page-sub">{board.length} tasks</span></h1><AllAvailable tasks={board} profile={profile} applied={applied} onApply={onApply} scores={scores} /></>}
               {tab === "working" && <><h1 className="page-h">Working on</h1><WorkingOn tasks={board} applied={applied} jobStatus={jobStatus} onAdvance={advance} /></>}
               {tab === "applied" && <><h1 className="page-h">Applied</h1><Applied tasks={board} applied={applied} profile={profile} jobStatus={jobStatus} scores={scores} /></>}
               {tab === "profile" && <ProfilePage profile={profile} onSave={applyProfile} onQuiz={() => setScreen("quiz")} aiKey={aiKey} model={model} />}
               {tab === "settings" && <SettingsPage profile={profile} />}
+              </>)}
             </PageBoundary>
           </main>
         </>

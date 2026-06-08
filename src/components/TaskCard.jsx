@@ -2,7 +2,7 @@ import React, { useState, useEffect } from "react";
 import {
   X, ShieldCheck, ShieldAlert, Coins, Wifi, MapPin, Clock, Briefcase, Check, Shuffle, Sparkles,
 } from "lucide-react";
-import { GRADS, TASK_CAT, TASK_IMG } from "../data/tasks.js";
+import { GRADS } from "../data/tasks.js";
 import { iconFor, photoSrc, genAbout, modeOf, hash } from "../lib/look.js";
 import { isRefuse, getScore, difficultyOf } from "../lib/heuristic.js";
 
@@ -41,7 +41,7 @@ export function TaskModal({ task, profile, scores, isApplied, onApply, onClose }
   const refuse = isRefuse(task);
   const m = refuse ? null : getScore(task, profile, scores);
   const diff = difficultyOf(task, profile, scores);
-  const Icon = iconFor(task, m); const grad = GRADS[hash(task.id) % GRADS.length]; const kw = TASK_IMG[task.id];
+  const Icon = iconFor(task, m); const grad = GRADS[hash(task.id) % GRADS.length];
   const mode = modeOf(task);
   const modeLabel = mode === "remote" ? "Remote" : mode === "hybrid" ? `Hybrid · ${task.location}` : task.location;
   return (
@@ -49,7 +49,7 @@ export function TaskModal({ task, profile, scores, isApplied, onApply, onClose }
       <div className="tmodal-card" onClick={(e) => e.stopPropagation()}>
         <button className="tmodal-x" onClick={onClose}><X size={18} /></button>
         <div className="tm-hero" style={{ background: refuse ? "#3a1410" : grad }}>
-          {!refuse && (kw || task.id) && <img className="tc-photo" src={photoSrc(task, 900, 420)} alt="" />}
+          {!refuse && <img className="tc-photo" src={photoSrc(task, 900, 420)} alt="" />}
           {!refuse && <div className="tc-tint" style={{ backgroundImage: grad }} />}
           {!refuse && <div className="tc-scrim" />}
           {refuse ? <ShieldAlert size={34} color="#ff8a72" /> : <Icon size={28} color="#fff" className="tc-ic" />}
@@ -58,7 +58,7 @@ export function TaskModal({ task, profile, scores, isApplied, onApply, onClose }
         <div className="tm-body">
           <div className="tm-top">
             <div><h2 className="tm-title">{task.title}</h2>
-              <div className="tm-agent">{task.verified ? <ShieldCheck size={13} color="#2fd286" /> : <ShieldAlert size={13} color="#ff8a72" />} {task.agent}{TASK_CAT[task.id] ? ` · ${TASK_CAT[task.id]}` : ""}</div></div>
+              <div className="tm-agent">{task.verified ? <ShieldCheck size={13} color="#2fd286" /> : <ShieldAlert size={13} color="#ff8a72" />} {task.agent}{(m && m.category) ? ` · ${m.category}` : ""}</div></div>
             {m && <span className="tm-match">{m.total}% match</span>}
           </div>
           {refuse ? (
@@ -97,14 +97,13 @@ export default function TaskCard({ task, profile, applied, onApply, tier, scores
   const m = refuse ? null : getScore(task, profile, scores);
   const Icon = iconFor(task, m); const grad = GRADS[hash(task.id) % GRADS.length];
   const isApplied = applied.includes(task.id);
-  const kw = TASK_IMG[task.id];
-  const cat = (m && m.category) || TASK_CAT[task.id] || "";
+  const cat = (m && m.category) || "";
   const [open, setOpen] = useState(false);
   return (
     <>
     <div className={`tc clickable ${refuse ? "refuse" : ""}`} onClick={() => setOpen(true)} role="button" tabIndex={0} onKeyDown={(e) => { if (e.key === "Enter") setOpen(true); }}>
       <div className="tc-thumb" style={{ background: refuse ? "#3a1410" : grad }}>
-        {!refuse && (kw || task.id) && <img className="tc-photo" src={photoSrc(task, 640, 380)} alt="" loading="lazy" />}
+        {!refuse && <img className="tc-photo" src={photoSrc(task, 640, 380)} alt="" loading="lazy" />}
         {!refuse && <div className="tc-tint" style={{ backgroundImage: grad }} />}
         {!refuse && <div className="tc-scrim" />}
         {refuse ? <ShieldAlert size={30} color="#ff8a72" /> : <Icon size={26} color="#fff" className="tc-ic" />}

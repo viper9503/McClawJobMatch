@@ -1,6 +1,5 @@
 import React from "react";
 import { Coins, Wifi, MapPin, Shuffle, Clock, Briefcase, Check, MessageCircle, Bot, ShieldCheck } from "lucide-react";
-import { TASK_CAT } from "../data/tasks.js";
 import { modeOf } from "../lib/look.js";
 
 const STAGES = ["Hired", "In progress", "Submitted", "Validating", "Paid"];
@@ -48,7 +47,7 @@ export default function WorkingOn({ tasks, applied, jobStatus, onAdvance }) {
           <div className="job" key={t.id}>
             <div className="job-top">
               <div><h3 className="job-title">{t.title}</h3>
-                <div className="job-agent"><ShieldCheck size={12} color="#2fd286" /> {t.agent}{TASK_CAT[t.id] ? ` · ${TASK_CAT[t.id]}` : ""}</div></div>
+                <div className="job-agent"><ShieldCheck size={12} color="#2fd286" /> {t.agent}</div></div>
               <span className="job-status" style={{ color: st.c, borderColor: st.c }}>{st.label}</span>
             </div>
             <StageTrack active={st.stageIdx} accent={st.c} />

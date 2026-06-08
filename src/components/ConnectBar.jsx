@@ -4,7 +4,7 @@ import { MODELS } from "../config.js";
 
 // One bar under the app header for the two optional API connections:
 //  - Claude (Anthropic key) → real AI scoring of the board
-//  - McClaw (X-API-Key)     → swap the demo board for the live task feed
+//  - McClaw (X-API-Key)     → load the live task board (or use the server-side key)
 // Both keys live only in localStorage; nothing is sent anywhere but those APIs.
 export default function ConnectBar({
   aiKey, setAiKey, model, setModel, profile, scoring, progress, scoredCount, onScore, onCancel, goProfile,
@@ -51,7 +51,7 @@ export default function ConnectBar({
           ? <span className="mb-status off"><ShieldAlert size={13} /> McClaw: {tasksError}</span>
           : liveActive
             ? <span className="mb-status"><Database size={13} /> {liveCount} live {liveCount === 1 ? "task" : "tasks"}</span>
-            : <span className="mb-status off"><Database size={13} /> Demo board · connect McClaw for live tasks</span>}
+            : <span className="mb-status off"><Database size={13} /> No live tasks · set a McClaw key to load the board</span>}
       <input className="mb-key inp" type="password" placeholder="McClaw X-API-Key…"
         value={mcclawKey} onChange={(e) => setMcclawKey(e.target.value.trim())} />
       <button className="btn-ghost" onClick={onRefresh} disabled={(!mcclawKey && !liveActive) || tasksLoading}>
