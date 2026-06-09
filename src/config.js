@@ -9,12 +9,6 @@ const env = import.meta.env ?? {};
 // CORS), set VITE_MCCLAW_API_BASE to the absolute URL.
 export const MCCLAW_API_BASE = env.VITE_MCCLAW_API_BASE || "/api/v1";
 
-// Server-side task proxy (api/tasks.js in prod, mirrored by the Vite dev
-// middleware). It injects the agent X-API-Key server-side, so the live board can
-// load without ever putting a key in the browser. Returns { tasks: [] } when no
-// server key is configured, so the app quietly falls back to the demo board.
-export const LIVE_TASKS_URL = env.VITE_LIVE_TASKS_URL || "/api/tasks";
-
 // --- Scoring model -------------------------------------------------------------
 // Haiku 4.5: fast + cheap, great for bulk scoring of many jobs in a live demo.
 // Sonnet 4.6: more nuanced resume reasoning, ~5x the cost.
@@ -45,6 +39,4 @@ export const LS = {
   profile: "mcclaw.profile",
   resumeText: "mcclaw.resumeText",
   resumeName: "mcclaw.resumeName",
-  applied: "mcclaw.applied",
-  jobStatus: "mcclaw.jobStatus",
 };
