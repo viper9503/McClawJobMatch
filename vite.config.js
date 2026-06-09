@@ -1,22 +1,11 @@
 import { defineConfig, loadEnv } from "vite";
 import react from "@vitejs/plugin-react";
 
-// The McClaw API does not (yet) send permissive CORS headers, so a browser can't
-// call https://mcclaw.io/api/v1 directly from localhost. Two pieces handle that:
-//
-//   1. /api/v1 proxy  — forwards the frontend's direct McClaw calls (the app's
-//      MCCLAW_API_BASE is "/api/v1") to mcclaw.io. The request leaves the dev
-//      server (not the browser), so CORS never applies. This is what the
-//      client-side X-API-Key / public-config-endpoint calls use.
-//
-//   2. /api/tasks + /api/apply middleware — mirrors the production Vercel
-//      serverless functions in `api/`. They inject a SERVER-SIDE MCCLAW_API_KEY
-//      (NOT a VITE_ var, so it never reaches the browser bundle) and proxy the
-//      McClaw marketplace. This is the more secure "going live" path.
-//
-// In production you'd put the same /api/v1 proxy in front of the static build
-// (nginx, a Cloudflare Worker, a tiny Express server, etc.) and deploy `api/` as
-// serverless functions. See README.md → "Going live".
+// In dev we mirror the production `/api/tasks` Vercel serverless function with a
+// small middleware: it injects the agent X-API-Key (read from a server-side
+// MCCLAW_API_KEY in .env, NOT a VITE_ var) and proxies the McClaw marketplace,
+// so the key never reaches the browser bundle. The remaining `/api/v1` proxy is
+// kept for any direct McClaw calls and never sees /api/tasks.
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), "");
   const KEY = env.MCCLAW_API_KEY || "";
@@ -63,6 +52,8 @@ export default defineConfig(({ mode }) => {
   };
 
   return {
+    // Vercel serves the app from the domain root, so the base is "/".
+    base: env.VITE_BASE || "/",
     plugins: [react(), liveTasksDev],
     server: {
       proxy: {
